@@ -19,6 +19,7 @@ from sterling.ledger.money import (
     decimal_to_str,
     money_to_str,
     require_fx_rate,
+    require_non_negative_money,
     require_non_negative_price,
     require_positive_money,
     require_positive_price,
@@ -83,7 +84,12 @@ class WithdrawalEvent:
 
 @dataclass(frozen=True, slots=True)
 class FillEvent:
-    """A fill in instrument currency. Cash and inventory move on the FX event."""
+    """A fill in instrument currency. Cash and inventory move on the FX event.
+
+    ``fee_allowance_gbp`` is reserved with a pending buy. ``fx_rate_ceiling``
+    is the caller's maximum GBP-per-unit rate for a non-GBP buy. Without it,
+    the GBP reservation is unknown.
+    """
 
     event_id: str
     timestamp: datetime
@@ -92,6 +98,8 @@ class FillEvent:
     quantity: Decimal
     price: Decimal
     instrument_currency: str
+    fee_allowance_gbp: Decimal = Decimal("0.00")
+    fx_rate_ceiling: Decimal | None = None
 
     def __post_init__(self) -> None:
         check_event_id(self.event_id)
@@ -106,6 +114,39 @@ class FillEvent:
         )
         object.__setattr__(self, "price", require_positive_price(self.price, label="price"))
         check_currency(self.instrument_currency)
+        object.__setattr__(
+            self,
+            "fee_allowance_gbp",
+            require_non_negative_money(self.fee_allowance_gbp, label="fee_allowance_gbp"),
+        )
+        if self.fx_rate_ceiling is not None:
+            ceiling = require_fx_rate(self.fx_rate_ceiling, label="fx_rate_ceiling")
+            object.__setattr__(self, "fx_rate_ceiling", ceiling)
+            if self.instrument_currency == "GBP" and ceiling != Decimal("1"):
+                raise InvalidEvent("GBP fills cannot carry an FX ceiling other than 1")
+
+
+@dataclass(frozen=True, slots=True)
+class FillVoidEvent:
+    """Removes a pending fill after its settlement was rejected.
+
+    The rejected FX event itself is not stored. The void is, so the fill cannot
+    later settle against a different lot.
+    """
+
+    event_id: str
+    timestamp: datetime
+    fill_id: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        check_event_id(self.event_id)
+        require_aware(self.timestamp)
+        check_event_id(self.fill_id)
+        if self.event_id != f"void-{self.fill_id}":
+            raise InvalidEvent("fill void id must be void-{fill_id}")
+        if not isinstance(self.reason, str) or not self.reason.strip() or len(self.reason) > 200:
+            raise InvalidEvent("void reason must be a non-empty string of at most 200 characters")
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,7 +261,17 @@ class EquitySnapshotEvent:
             raise InvalidEvent(f"equity snapshot id must be {expected} for its Europe/London date")
 
 
-LedgerEvent = DepositEvent | WithdrawalEvent | FillEvent | FxEvent | FeeEvent | MarkEvent | ReversalEvent | EquitySnapshotEvent
+LedgerEvent = (
+    DepositEvent
+    | WithdrawalEvent
+    | FillEvent
+    | FillVoidEvent
+    | FxEvent
+    | FeeEvent
+    | MarkEvent
+    | ReversalEvent
+    | EquitySnapshotEvent
+)
 
 
 def snapshot_id(day: date) -> str:
@@ -258,6 +309,16 @@ def event_to_dict(event: LedgerEvent) -> dict[str, object]:
             "quantity": decimal_to_str(event.quantity),
             "price": decimal_to_str(event.price),
             "instrument_currency": event.instrument_currency,
+            "fee_allowance_gbp": money_to_str(event.fee_allowance_gbp),
+            "fx_rate_ceiling": None if event.fx_rate_ceiling is None else decimal_to_str(event.fx_rate_ceiling),
+        }
+    if isinstance(event, FillVoidEvent):
+        return {
+            "event_type": "fill_void",
+            "event_id": event.event_id,
+            "timestamp": event.timestamp.isoformat(),
+            "fill_id": event.fill_id,
+            "reason": event.reason,
         }
     if isinstance(event, FxEvent):
         return {
@@ -329,6 +390,15 @@ def _event_from_dict(data: Mapping[str, Any]) -> LedgerEvent:
             require_positive_quantity(_required_str(data, "quantity"), label="quantity"),
             require_positive_price(_required_str(data, "price"), label="price"),
             _required_str(data, "instrument_currency"),
+            _optional_money(data, "fee_allowance_gbp"),
+            _optional_rate(data, "fx_rate_ceiling"),
+        )
+    if event_type == "fill_void":
+        return FillVoidEvent(
+            event_id,
+            timestamp,
+            _required_str(data, "fill_id"),
+            _required_str(data, "reason"),
         )
     if event_type == "fx":
         return FxEvent(
@@ -376,6 +446,22 @@ def _event_from_dict(data: Mapping[str, Any]) -> LedgerEvent:
 
 def _money(data: Mapping[str, Any], key: str) -> Decimal:
     return require_positive_money(_required_str(data, key), label=key)
+
+
+def _optional_money(data: Mapping[str, Any], key: str) -> Decimal:
+    value = data.get(key, "0.00")
+    if not isinstance(value, str):
+        raise PersistenceError(f"{key} must be a decimal string")
+    return require_non_negative_money(value, label=key)
+
+
+def _optional_rate(data: Mapping[str, Any], key: str) -> Decimal | None:
+    if key not in data or data[key] is None:
+        return None
+    value = data[key]
+    if not isinstance(value, str):
+        raise PersistenceError(f"{key} must be a decimal string or null")
+    return require_fx_rate(value, label=key)
 
 
 def _timestamp(value: object) -> datetime:

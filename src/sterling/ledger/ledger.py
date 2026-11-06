@@ -12,7 +12,7 @@ from datetime import date, datetime
 from decimal import ROUND_HALF_EVEN, Decimal
 from pathlib import Path
 
-from sterling.errors import IdempotencyConflict, InvalidEvent
+from sterling.errors import IdempotencyConflict, InvalidEvent, LedgerRejected, OutOfOrderTimestamp
 from sterling.ledger.allocation import ClosedTrade
 from sterling.ledger.calendar import london_date, require_aware
 from sterling.ledger.engine import (
@@ -24,6 +24,8 @@ from sterling.ledger.engine import (
 )
 from sterling.ledger.events import (
     EquitySnapshotEvent,
+    FillVoidEvent,
+    FxEvent,
     LedgerEvent,
     equity_snapshot,
 )
@@ -34,8 +36,9 @@ from sterling.ledger.metrics import (
     fee_allocation,
 )
 from sterling.ledger.money import quantize_money, require_non_negative_money
+from sterling.ledger.reservations import Availability, summarise_availability
 from sterling.ledger.store import read_ledger, write_ledger
-from sterling.ledger.valuation import PositionValuation, all_open_positions_fresh, open_valuations, position_status
+from sterling.ledger.valuation import PositionValuation, accounting_valuation_status, open_valuations
 from sterling.rules.model import DeskRules
 
 _AVG_QUANTUM = Decimal("0.00000001")
@@ -54,7 +57,7 @@ class PositionView:
     unrealised_pnl_gbp: Decimal
     mark_timestamp: datetime | None
     mark_source: str | None
-    valuation_status: str
+    valuation_status_for_accounting: str
     unallocated_entry_fees_gbp: Decimal
 
 
@@ -70,7 +73,10 @@ class LedgerView:
     consecutive_net_closed_losses: int
     event_ids: tuple[str, ...]
     valuations: tuple[PositionValuation, ...]
-    all_open_positions_fresh: bool
+    available_cash_gbp: Decimal | None
+    available_cash_status: str
+    gross_exposure_gbp: Decimal | None
+    exposure_status: str
 
 
 class Ledger:
@@ -143,19 +149,27 @@ class Ledger:
         return tuple(self._events)
 
     def post(self, event: LedgerEvent) -> None:
-        """Append an event, or ignore an exact duplicate. Rejected events do not append."""
+        """Append an event, or ignore an exact duplicate.
+
+        A rejected FX settlement is not appended. If its fill is still pending,
+        that fill is voided in the same step so it cannot settle later.
+        """
         existing = self._find(event.event_id)
         if existing is not None:
             if existing != event:
                 raise IdempotencyConflict(f"event id {event.event_id} was reused with a different payload")
             return
-        if not isinstance(event, EquitySnapshotEvent) and event.event_id.startswith("day-baseline-"):
-            raise InvalidEvent("event id prefix day-baseline- is reserved for day baselines")
+        if not isinstance(event, (EquitySnapshotEvent, FillVoidEvent)) and event.event_id.startswith(("day-baseline-", "void-")):
+            raise InvalidEvent("event id prefix is reserved")
         proposed = self._with_baseline(event)
         for extra in proposed:
             if self._find(extra.event_id) is not None:
                 raise IdempotencyConflict(f"event id {extra.event_id} already exists")
-        reduce_events(self.initial_cash_gbp, [*self._events, *proposed])
+        try:
+            reduce_events(self.initial_cash_gbp, [*self._events, *proposed])
+        except LedgerRejected as exc:
+            self._void_failed_settlement(event, exc)
+            raise
         self._events.extend(proposed)
 
     def capture_day_baseline(self, as_of: datetime) -> None:
@@ -174,7 +188,7 @@ class Ledger:
         """Account view.
 
         With ``as_of``, balances are the log up to that instant. Without it,
-        balances are current and no mark is reported as FRESH.
+        balances are current and no mark is labelled ACCOUNTING_SAME_DAY.
         """
         if as_of is None:
             return _view(self._state(), self._events, None)
@@ -206,6 +220,16 @@ class Ledger:
             events = [event for event in self._events if event.timestamp <= aware]
         state = reduce_events(self.initial_cash_gbp, events)
         return consecutive_net_closed_losses(state, events)
+
+    def _void_failed_settlement(self, event: LedgerEvent, exc: LedgerRejected) -> None:
+        if isinstance(exc, (OutOfOrderTimestamp, IdempotencyConflict)) or not isinstance(event, FxEvent):
+            return
+        if event.fill_id not in reduce_events(self.initial_cash_gbp, self._events).pending:
+            return
+        void = FillVoidEvent(f"void-{event.fill_id}", event.timestamp, event.fill_id, "settlement rejected")
+        proposed = self._with_baseline(void)
+        reduce_events(self.initial_cash_gbp, [*self._events, *proposed])
+        self._events.extend(proposed)
 
     def _state(self) -> _State:
         return reduce_events(self.initial_cash_gbp, self._events)
@@ -240,6 +264,7 @@ def _view(state: _State, events: list[LedgerEvent], as_of: datetime | None) -> L
     baselines = tuple((day.isoformat(), baseline.equity_gbp) for day, baseline in sorted(state.baselines.items()))
     fees = tuple(sorted(state.fees.items()))
     valuations = open_valuations(state, as_of)
+    funds = _availability(state)
     return LedgerView(
         cash_gbp=state.cash,
         equity_gbp=equity_of(state),
@@ -251,7 +276,22 @@ def _view(state: _State, events: list[LedgerEvent], as_of: datetime | None) -> L
         consecutive_net_closed_losses=allocation.consecutive_net_closed_losses,
         event_ids=tuple(event.event_id for event in events),
         valuations=valuations,
-        all_open_positions_fresh=all_open_positions_fresh(valuations),
+        available_cash_gbp=funds.available_cash_gbp,
+        available_cash_status=funds.available_cash_status,
+        gross_exposure_gbp=funds.gross_exposure_gbp,
+        exposure_status=funds.exposure_status,
+    )
+
+
+def _availability(state: _State) -> Availability:
+    settled = Decimal("0.00")
+    for position in state.positions.values():
+        settled = quantize_money(settled + market_value(position))
+    pending_buys = [fill for fill in state.pending.values() if fill.side == "buy"]
+    return summarise_availability(
+        cash_gbp=state.cash,
+        pending_buys=pending_buys,
+        settled_market_value_gbp=settled,
     )
 
 
@@ -273,6 +313,6 @@ def _position_view(position: Position, as_of: datetime | None, unallocated_entry
         unrealised_pnl_gbp=quantize_money(value - position.total_cost_gbp),
         mark_timestamp=position.mark_timestamp,
         mark_source=position.mark_source,
-        valuation_status=position_status(position, as_of),
+        valuation_status_for_accounting=accounting_valuation_status(position, as_of),
         unallocated_entry_fees_gbp=unallocated_entry_fees,
     )

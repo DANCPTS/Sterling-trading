@@ -12,9 +12,14 @@ account data, and explicit human authorisation. There is no automatic reset on
 recovery. Stage 1's point-in-time day-loss figure is not that latch: a recovery
 reduces the reported figure and does not block entries.
 
-Stage 2 must fail closed unless every instrument it would trade has valuation
-status FRESH. STALE, MISSING, and COST_BASIS are not permission to trade. A
-missing or old mark must not be read as permission.
+Stage 2 must independently verify maximum quote age, the timestamp (including
+future timestamps), the source, and validity before approving any order, and
+must fail closed otherwise. ``ACCOUNTING_SAME_DAY`` is an accounting label
+only. It is not an execution quote, including when the mark is hours old on
+that London day. Stage 1 exposes no permission to trade.
+
+Stage 2 must also fail closed when available cash or exposure status is
+UNKNOWN.
 """
 
 from __future__ import annotations
@@ -30,7 +35,11 @@ class RiskEngine:
     validated account data, and explicit human authorisation. There is no
     automatic reset on recovery.
 
-    Stage 2 must fail closed on any valuation that is not FRESH.
+    Stage 2 must independently verify maximum quote age, the timestamp
+    (including future timestamps), the source, and validity before approving
+    any order, and must fail closed otherwise. An accounting valuation status
+    is not execution-eligible. Stage 2 must also fail closed when available
+    cash or exposure is UNKNOWN.
     """
 
     def evaluate(self) -> None:

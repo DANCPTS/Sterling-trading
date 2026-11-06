@@ -8,8 +8,9 @@ if equity recovers. Deposits and withdrawals since the baseline are removed
 from equity before the subtraction, so they do not reset the budget and a
 withdrawal is not itself a trading loss.
 
-Valuation rows on the metrics are labels. ``all_open_positions_fresh`` is true
-only when every open position is FRESH. Stage 2 must fail closed otherwise.
+Valuation rows are accounting labels, not execution quotes. Available cash and
+exposure are ``UNKNOWN`` when a pending buy has no determinable GBP amount.
+Stage 2 must fail closed on ``UNKNOWN``.
 """
 
 from __future__ import annotations
@@ -20,10 +21,11 @@ from decimal import Decimal
 
 from sterling.ledger.allocation import Allocation, allocate
 from sterling.ledger.calendar import london_date, require_aware
-from sterling.ledger.engine import DayBaseline, _State, equity_of
+from sterling.ledger.engine import DayBaseline, _State, equity_of, market_value
 from sterling.ledger.events import DepositEvent, LedgerEvent, WithdrawalEvent
 from sterling.ledger.money import quantize_money
-from sterling.ledger.valuation import PositionValuation, all_open_positions_fresh, open_valuations
+from sterling.ledger.reservations import Availability, summarise_availability
+from sterling.ledger.valuation import PositionValuation, open_valuations
 from sterling.rules.caps import daily_loss_threshold
 from sterling.rules.model import DeskRules
 
@@ -42,7 +44,10 @@ class DailyLossMetrics:
     daily_loss_threshold_gbp: Decimal | None
     daily_loss_threshold_reached: bool | None
     valuations: tuple[PositionValuation, ...]
-    all_open_positions_fresh: bool
+    available_cash_gbp: Decimal | None
+    available_cash_status: str
+    gross_exposure_gbp: Decimal | None
+    exposure_status: str
 
 
 def daily_loss_metrics(
@@ -60,7 +65,7 @@ def daily_loss_metrics(
     day = london_date(as_of)
     equity = equity_of(state)
     valuations = open_valuations(state, as_of)
-    fresh = all_open_positions_fresh(valuations)
+    funds = _funds(state)
     baseline: DayBaseline | None = state.baselines.get(day)
     if baseline is None:
         return DailyLossMetrics(
@@ -74,7 +79,10 @@ def daily_loss_metrics(
             daily_loss_threshold_gbp=None,
             daily_loss_threshold_reached=None,
             valuations=valuations,
-            all_open_positions_fresh=fresh,
+            available_cash_gbp=funds.available_cash_gbp,
+            available_cash_status=funds.available_cash_status,
+            gross_exposure_gbp=funds.gross_exposure_gbp,
+            exposure_status=funds.exposure_status,
         )
     net = _net_external_since_baseline(state, events, baseline)
     adjusted = quantize_money(equity - net)
@@ -92,7 +100,22 @@ def daily_loss_metrics(
         daily_loss_threshold_gbp=threshold,
         daily_loss_threshold_reached=day_loss >= threshold,
         valuations=valuations,
-        all_open_positions_fresh=fresh,
+        available_cash_gbp=funds.available_cash_gbp,
+        available_cash_status=funds.available_cash_status,
+        gross_exposure_gbp=funds.gross_exposure_gbp,
+        exposure_status=funds.exposure_status,
+    )
+
+
+def _funds(state: _State) -> Availability:
+    settled = Decimal("0.00")
+    for position in state.positions.values():
+        settled = quantize_money(settled + market_value(position))
+    pending_buys = [fill for fill in state.pending.values() if fill.side == "buy"]
+    return summarise_availability(
+        cash_gbp=state.cash,
+        pending_buys=pending_buys,
+        settled_market_value_gbp=settled,
     )
 
 

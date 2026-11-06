@@ -1,12 +1,18 @@
 """JSONL persistence.
 
-The file is the event log plus a checksum of the replayed state. Restart
-replays the log; it does not take a fresh baseline from the wall clock.
-Decimal amounts are strings so JSON numbers cannot become floats.
+The file is the event log, a SHA-256 of the meta line and every event line,
+and a checksum of the replayed totals. Restart replays the log; it does not
+take a fresh baseline from the wall clock. Decimal amounts are strings so JSON
+numbers cannot become floats.
+
+The digest detects accidental or naive tampering of those lines, including
+``rules_content_hash``. It is not an external signature: anyone who rewrites
+the lines and the digest together has written a different file.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -20,7 +26,7 @@ from sterling.ledger.engine import equity_of, reduce_events
 from sterling.ledger.events import EquitySnapshotEvent, LedgerEvent, event_from_dict, event_to_dict
 from sterling.ledger.money import money_to_str, require_non_negative_money, signed_money
 
-_FORMAT_VERSION = 1
+_FORMAT_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,18 +46,17 @@ def write_ledger(
     rules_content_hash: str | None,
 ) -> None:
     state = reduce_events(initial_cash_gbp, events)
-    lines = [
-        _dumps(
-            {
-                "record": "meta",
-                "format_version": _FORMAT_VERSION,
-                "currency": "GBP",
-                "initial_cash_gbp": money_to_str(initial_cash_gbp),
-                "rules_version_id": rules_version_id,
-                "rules_content_hash": rules_content_hash,
-            }
-        )
-    ]
+    meta_line = _dumps(
+        {
+            "record": "meta",
+            "format_version": _FORMAT_VERSION,
+            "currency": "GBP",
+            "initial_cash_gbp": money_to_str(initial_cash_gbp),
+            "rules_version_id": rules_version_id,
+            "rules_content_hash": rules_content_hash,
+        }
+    )
+    lines = [meta_line]
     for event in events:
         payload: dict[str, object] = {"record": "event"}
         payload.update(event_to_dict(event))
@@ -75,6 +80,7 @@ def write_ledger(
                 "realised_pnl_gbp": money_to_str(state.realised),
                 "event_count": len(events),
                 "baselines": baselines,
+                "log_sha256": _log_sha256(lines[0], lines[1:]),
             }
         )
     )
@@ -92,6 +98,9 @@ def read_ledger(path: Path) -> LoadedLedger:
         raise PersistenceError("first record must be meta")
     if checksum.get("record") != "checksum":
         raise PersistenceError("last record must be checksum")
+    digest = checksum.get("log_sha256")
+    if not isinstance(digest, str) or digest != _log_sha256(raw_lines[0], raw_lines[1:-1]):
+        raise PersistenceError("log digest does not match the meta and event lines")
     if meta.get("format_version") != _FORMAT_VERSION:
         raise PersistenceError("unsupported ledger format_version")
     if meta.get("currency") != "GBP":
@@ -143,6 +152,13 @@ def read_ledger(path: Path) -> LoadedLedger:
         rules_version_id=rules_version_id,
         rules_content_hash=rules_content_hash,
     )
+
+
+def _log_sha256(meta_line: str, event_lines: list[str]) -> str:
+    payload = meta_line.encode("utf-8") + b"\n"
+    for line in event_lines:
+        payload += line.encode("utf-8") + b"\n"
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _dumps(payload: dict[str, object]) -> str:

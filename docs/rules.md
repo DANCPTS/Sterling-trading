@@ -75,12 +75,21 @@ trading day even if equity recovers. The halt survives restarts. Reset requires
 the trading-day transition, fresh validated account data, and explicit human
 authorisation. There is no automatic reset on recovery.
 
-## Valuation freshness
+## Valuation labels
 
-Ledger outputs and daily-loss metrics carry a status of `FRESH`, `STALE`,
-`MISSING`, or `COST_BASIS`, plus the mark timestamp and source when a mark
-exists. A mark is `FRESH` only for an `as_of` timestamp on the same
-Europe/London day, already in effect. Unmarked open positions are
-`COST_BASIS`. `view()` without `as_of` never reports `FRESH`. Stage 2 must
-fail closed on anything that is not `FRESH`. A stale or missing valuation is
-not permission to trade. Stage 1 does not block entries.
+Ledger outputs carry `valuation_status_for_accounting`: `ACCOUNTING_SAME_DAY`,
+`ACCOUNTING_OTHER_DAY`, `ACCOUNTING_COST_BASIS`, or
+`ACCOUNTING_NO_OPEN_QUANTITY`, plus mark timestamp and source. Same-day only
+means the mark's London civil date matches `as_of`. A mark from 09:00 is still
+just `ACCOUNTING_SAME_DAY` at 16:00. That status is not an execution quote.
+The ledger exposes no permission to trade.
+
+Stage 2 must independently verify maximum quote age, the timestamp (including
+future timestamps), the source, and validity before approving any order, and
+must fail closed otherwise.
+
+Pending buys reserve cash when the GBP amount is known (consideration plus the
+caller-supplied fee allowance, using `fx_rate_ceiling` for non-GBP). Pending
+sells reserve settled quantity. If the GBP amount cannot be determined,
+available cash and exposure are `UNKNOWN`. Stage 2 must fail closed on
+`UNKNOWN`. A rejected FX settlement voids that fill in the same step.

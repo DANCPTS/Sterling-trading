@@ -5,7 +5,7 @@ from sterling.ledger.ledger import Ledger
 from sterling.rules.loader import load_default_rules, load_rules
 from sterling.rules.model import DeskRules
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 __all__ = [
     "DeskRules",

@@ -39,11 +39,9 @@ def test_same_id_with_a_different_payload_conflicts() -> None:
 
 def test_buy_that_would_make_cash_negative_is_rejected_and_leaves_the_log() -> None:
     ledger = Ledger("500.00")
-    ledger.post(FillEvent("buy-too-big", june(1, 10), "SYNTH-EQ", "buy", "600", "1.00", "GBP"))
-    before = ledger.events
     with pytest.raises(NegativeCashRejected):
-        ledger.post(FxEvent("fx-too-big", june(1, 10, 1), "buy-too-big", "1"))
-    assert ledger.events == before
+        ledger.post(FillEvent("buy-too-big", june(1, 10), "SYNTH-EQ", "buy", "600", "1.00", "GBP"))
+    assert ledger.events == ()
     assert ledger.view().cash_gbp == Decimal("500.00")
     assert ledger.view().positions == ()
 
@@ -60,10 +58,9 @@ def test_rejected_first_settlement_does_not_invent_a_baseline_beyond_the_fill() 
             quantity="101",
             price="1.00",
         )
-    # The fill was accepted before the FX rejection. Cash is unchanged and nothing is held.
     assert ledger.view().cash_gbp == Decimal("100.00")
     assert ledger.view().positions == ()
-    assert "buy-over" in ledger.view().pending_fill_ids
+    assert ledger.events == ()
 
 
 def test_oversell_is_rejected() -> None:
@@ -78,13 +75,12 @@ def test_oversell_is_rejected() -> None:
         price="1.00",
     )
     before = ledger.events
-    ledger.post(FillEvent("sell-too-many", june(1, 11), "SYNTH-EQ", "sell", "3", "1.00", "GBP"))
     with pytest.raises(OversellRejected):
-        ledger.post(FxEvent("fx-sell-too-many", june(1, 11), "sell-too-many", "1"))
-    assert ledger.events[-1].event_id == "sell-too-many"
+        ledger.post(FillEvent("sell-too-many", june(1, 11), "SYNTH-EQ", "sell", "3", "1.00", "GBP"))
+    assert ledger.events == before
     assert ledger.view().positions[0].quantity == Decimal("2")
     assert ledger.view().cash_gbp == Decimal("498.00")
-    assert len(ledger.events) == len(before) + 1
+    assert ledger.view().pending_fill_ids == ()
 
 
 def test_cash_may_reach_zero() -> None:
@@ -110,6 +106,8 @@ def test_gbp_fx_rate_must_be_one() -> None:
     with pytest.raises(InvalidEvent, match="fx_rate_to_gbp of 1"):
         ledger.post(FxEvent("fx-bad-gbp", june(1, 10, 1), "buy-gbp", "0.99"))
     assert ledger.view().cash_gbp == Decimal("500.00")
+    assert ledger.view().pending_fill_ids == ()
+    assert "void-buy-gbp" in ledger.view().event_ids
 
 
 def test_reversal_replaces_a_wrong_fx_rate() -> None:

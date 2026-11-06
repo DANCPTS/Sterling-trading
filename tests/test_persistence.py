@@ -165,6 +165,53 @@ def test_truncated_partial_and_checksum_failures_refuse_to_load(tmp_path: Path) 
     assert leftover.read_text(encoding="utf-8") != original
 
 
+def test_digest_rejects_tamper_reorder_truncation_and_partial_write(tmp_path: Path) -> None:
+    ledger = _book()
+    path = tmp_path / "book.jsonl"
+    ledger.save(path)
+    original = path.read_text(encoding="utf-8")
+    lines = original.splitlines()
+
+    def refuse(mutated: list[str]) -> None:
+        path.write_text("\n".join(mutated) + "\n", encoding="utf-8")
+        with pytest.raises(PersistenceError):
+            Ledger.load(path)
+
+    pending = [line for line in lines if '"event_type":"fill"' in line]
+    assert pending
+    priced = pending[0].replace('"price":"10"', '"price":"10.50"', 1)
+    if priced == pending[0]:
+        priced = pending[0].replace('"price":"10.00"', '"price":"10.50"', 1)
+    assert priced != pending[0]
+    refuse([priced if line == pending[0] else line for line in lines])
+
+    fee_line = next(line for line in lines if '"event_type":"fee"' in line)
+    retagged = fee_line.replace('"related_event_id":"buy-1"', '"related_event_id":"sell-1"', 1)
+    assert retagged != fee_line
+    refuse([retagged if line == fee_line else line for line in lines])
+
+    meta = lines[0].replace(ledger.rules_content_hash or "", "0" * 64, 1)
+    assert meta != lines[0]
+    refuse([meta, *lines[1:]])
+
+    event_indexes = [index for index, line in enumerate(lines) if '"record":"event"' in line]
+    swapped = list(lines)
+    left, right = event_indexes[0], event_indexes[1]
+    swapped[left], swapped[right] = swapped[right], swapped[left]
+    refuse(swapped)
+
+    path.write_text(original[: max(1, len(original) // 2)], encoding="utf-8")
+    with pytest.raises(PersistenceError):
+        Ledger.load(path)
+    truncated = lines[:-1] + [lines[-1][:12]]
+    path.write_text("\n".join(truncated) + "\n", encoding="utf-8")
+    with pytest.raises(PersistenceError):
+        Ledger.load(path)
+
+    path.write_text(original, encoding="utf-8")
+    assert Ledger.load(path).view() == ledger.view()
+
+
 def test_duplicate_post_is_not_written_twice(tmp_path: Path) -> None:
     ledger = Ledger("500.00")
     deposit(ledger, "dep-1", june(1, 9), "25.00")

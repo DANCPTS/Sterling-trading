@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sterling"
-version = "0.1.1"
+version = "0.1.2"
 description = "Stage 1 offline simulated GBP ledger and versioned desk rules."
 readme = "README.md"
 requires-python = ">=3.11"

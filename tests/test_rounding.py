@@ -77,11 +77,10 @@ def test_zero_rounded_notional_is_rejected() -> None:
         "quantity": "0.00000001",
         "price": "0.00000001",
     }
-    from sterling.ledger.events import FillEvent, FxEvent
+    from sterling.ledger.events import FillEvent
 
-    ledger.post(FillEvent("fill-dust", june(1, 10), "SYNTH-EQ", "buy", "0.00000001", "0.00000001", "GBP"))
     with pytest.raises(InvalidEvent, match="zero"):
-        ledger.post(FxEvent("fx-dust", june(1, 10, 1), "fill-dust", "1"))
+        ledger.post(FillEvent("fill-dust", june(1, 10), "SYNTH-EQ", "buy", "0.00000001", "0.00000001", "GBP"))
     assert ledger.view().cash_gbp == Decimal("500.00")
     assert ledger.view().positions == ()
     assert settle_kwargs["instrument_id"] == "SYNTH-EQ"

@@ -51,16 +51,24 @@ are not capitalised into that cost: they reduce cash immediately and therefore
 equity once. Equity is cash plus marked market value, so a fee is not
 subtracted a second time. Price P&L on a sale is proceeds minus cost relieved.
 
-The loss streak uses a separate attribution that does not post cash. Entry
-fees (commission, FX fee, stamp duty/SDRT) whose related id is a buy fill or
-that buy's FX settlement form one pool per instrument beside the open
-quantity. A sale of `q` from pool quantity `Q` takes
-`round_half_even(pool * q / Q)`. A sale that finishes the position takes the
-exact remainder. The rest stays with the open position. Exit fees related to
-the sell fill or its FX settlement are charged entirely to that close. Net
-result = price P&L − allocated entry fees − exit fees. A negative net is a
-loss for the streak, a positive net resets it, and zero leaves it. Reaching 3
-does not block anything, and nothing in the package clears the streak.
+The loss streak uses a separate attribution that does not post cash. Each
+settled buy is a lot. Entry fees related to that fill or its FX settlement
+stay on that lot. A sell of `q` from open quantity `Q` consumes each open lot
+pro rata (`remaining * q / Q`, 8 decimal places, last lot takes the residual).
+Fees already on the lot are relieved in that same proportion; consuming the
+lot's remaining quantity takes the remaining fee pence exactly. A later fee is
+applied only to its own lot: the closed fraction is split across the closes
+that consumed that lot, and the rest stays on its still-open units. A fully
+closed lot, including one closed before a later re-entry, receives the whole
+late fee on those original closes. It is not given to the new position or to
+the latest close of a different fill. Exit fees belong to the sell fill. Net
+= price P&L − allocated entry fees − exit fees. Reaching 3 does not block
+anything.
+
+A buy FX reversal is refused when a later sell on that instrument is still in
+the log, because average-cost relief would not unwind to the voided history.
+Refused reversals append nothing. Reversing the dependent sells first makes
+the buy reversible by subtracting its own quantity and cost.
 
 Pending fills are outside equity until the FX event posts. A rejected FX does
 not roll back the fill that was already accepted. Callers that want both in the
@@ -101,22 +109,32 @@ survives restarts. Reset requires the trading-day transition, fresh validated
 account data, and explicit human authorisation. There is no automatic reset
 on recovery. The Stage 1 figure is not that latch.
 
-## Valuation freshness
+## Accounting valuation labels
 
-Each open position on `Ledger.view` and on the daily-loss metrics carries
-`mark_timestamp`, `mark_source`, and `valuation_status`:
+`valuation_status_for_accounting` is not an execution quote:
 
 | Status | Meaning |
 | --- | --- |
-| `FRESH` | Current mark, `mark_timestamp <= as_of`, same Europe/London civil day. |
-| `STALE` | A mark exists but it is from another London day, after `as_of`, or `as_of` was not supplied. |
-| `COST_BASIS` | Open quantity with no mark. Equity uses cost. This is not a market valuation. |
-| `MISSING` | No open quantity. |
+| `ACCOUNTING_SAME_DAY` | Mark timestamp is on the same London civil day as `as_of` and not after it. A mark from the morning still has this label in the afternoon. |
+| `ACCOUNTING_OTHER_DAY` | A mark exists but it is another London day, after `as_of`, or `as_of` was omitted. |
+| `ACCOUNTING_COST_BASIS` | Open quantity and no mark. Equity uses cost. |
+| `ACCOUNTING_NO_OPEN_QUANTITY` | Flat position. |
 
-`all_open_positions_fresh` is true only when there is at least one open
-position and every one of them is `FRESH`. Stage 2 must fail closed on
-anything that is not `FRESH`. Stale, missing, and cost-basis data are not
-permission to trade. Stage 1 still shows the accounting equity.
+Stage 2 must independently verify maximum quote age, the timestamp (including
+future timestamps), the source, and validity before approving any order, and
+must fail closed otherwise. Stage 1 does not expose a permission-to-trade flag.
+
+## Pending reservations
+
+Pending GBP buys reserve rounded consideration plus `fee_allowance_gbp`.
+Non-GBP buys do the same with `fx_rate_ceiling`. Without a ceiling the
+reservation is unknown, so `available_cash_status` and `exposure_status` are
+`UNKNOWN` and the amounts are omitted. Withdrawals, fees, and further known
+buys are rejected while cash is `UNKNOWN` or when they would spend a known
+reservation. Pending sells reserve settled quantity and are rejected at fill
+time when that quantity is not already held. A rejected FX settlement appends
+`void-{fill_id}` and drops the fill; the FX event is not stored. Stage 2 must
+fail closed on `UNKNOWN`.
 
 ## Persistence
 
@@ -128,12 +146,13 @@ a recorded snapshot equity does not match. Replay does not call the wall clock,
 so a baseline captured on a June or March date is still that date after a
 restart in November.
 
-The checksum detects a partial edit. A truncated final line, a file cut off
-mid-write, or a checksum that does not match replay raises `PersistenceError`.
-The loader does not invent the missing tail or keep a half-applied event.
-`os.replace` publishes a finished file; a leftover temporary file is not the
-ledger path. The checksum is not an external signature: someone who rewrites
-the events and the checksum together has just written a different ledger.
+The checksum carries `log_sha256`, the SHA-256 of the exact meta line and
+every event line, including `rules_content_hash`. A mismatched digest, a
+reordered log, a truncated final line, or a partial write raises
+`PersistenceError` before the totals are trusted. The totals remain a second
+check. This detects accidental or naive tampering only. It is not an external
+signature: rewriting the lines and the digest together produces a different
+file, not a proof of origin.
 
 ## Deferred
 
@@ -144,4 +163,7 @@ the events and the checksum together has just written a different ledger.
   restart. Stage 1 does not block entries.
 - Broker adapter and any market-data client. Marks are caller-supplied.
 - Statutory calculation of SDRT. The stamp line is an amount the caller posts.
-- Fail-closed trading on non-FRESH valuations. Stage 1 only labels them.
+- Execution checks on quote age, future timestamps, source, and validity.
+  Stage 1 only stores an accounting label.
+- Fail-closed handling of `UNKNOWN` availability. Stage 1 reports the status
+  and refuses spends it cannot price. It does not approve orders.

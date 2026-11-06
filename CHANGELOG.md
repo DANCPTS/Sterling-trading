@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.2 - 2026-11-06
+
+- Rename the same-day mark label to `ACCOUNTING_SAME_DAY` and remove any flag
+  that could be read as permission to trade.
+- Attribute late entry fees only to the original buy fill, including the
+  closes that already consumed that fill.
+- Reserve cash for priced pending buys and quantity for pending sells. Void a
+  fill when its settlement is rejected. Report `UNKNOWN` when FX is unpriced.
+- Refuse a buy reversal when a later sell on that instrument still stands.
+- Store a SHA-256 of the meta line and event lines. Mismatch refuses the load.
+
 ## 0.1.1 - 2026-11-06
 
 - Attribute entry fees pro-rata across the open quantity when scoring a closed

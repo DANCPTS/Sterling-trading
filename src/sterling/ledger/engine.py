@@ -29,6 +29,7 @@ from sterling.ledger.events import (
     EquitySnapshotEvent,
     FeeEvent,
     FillEvent,
+    FillVoidEvent,
     FxEvent,
     LedgerEvent,
     MarkEvent,
@@ -36,6 +37,7 @@ from sterling.ledger.events import (
     WithdrawalEvent,
 )
 from sterling.ledger.money import gbp_notional, quantize_money, require_money
+from sterling.ledger.reservations import buy_reservation_gbp
 
 _ZERO = Decimal("0.00")
 _ZERO_QTY = Decimal("0")
@@ -118,6 +120,7 @@ class _State:
         "realised",
         "reversed_ids",
         "settled_fills",
+        "settlement_order",
     )
 
     def __init__(self, cash: Decimal) -> None:
@@ -134,6 +137,7 @@ class _State:
         self.baselines: dict[date, DayBaseline] = {}
         self.effects: dict[str, Effect] = {}
         self.reversed_ids: set[str] = set()
+        self.settlement_order: dict[str, list[str]] = {}
 
     def clone(self) -> _State:
         other = _State(self.cash)
@@ -145,6 +149,7 @@ class _State:
         other.baselines = dict(self.baselines)
         other.effects = dict(self.effects)
         other.reversed_ids = set(self.reversed_ids)
+        other.settlement_order = {key: list(value) for key, value in self.settlement_order.items()}
         return other
 
 
@@ -204,6 +209,8 @@ def _dispatch(state: _State, event: LedgerEvent, index: int) -> None:
         _apply_mark(state, event)
     elif isinstance(event, ReversalEvent):
         _apply_reversal(state, event)
+    elif isinstance(event, FillVoidEvent):
+        _apply_fill_void(state, event)
     elif isinstance(event, EquitySnapshotEvent):
         _apply_snapshot(state, event, index)
     else:
@@ -216,6 +223,7 @@ def _apply_deposit(state: _State, event: DepositEvent) -> None:
 
 
 def _apply_withdrawal(state: _State, event: WithdrawalEvent) -> None:
+    _require_spendable(state, event.amount_gbp, "withdrawal")
     if state.cash < event.amount_gbp:
         raise NegativeCashRejected("withdrawal exceeds GBP cash")
     state.cash = quantize_money(state.cash - event.amount_gbp)
@@ -225,7 +233,13 @@ def _apply_withdrawal(state: _State, event: WithdrawalEvent) -> None:
 def _apply_fill(state: _State, event: FillEvent) -> None:
     if event.event_id in state.pending or event.event_id in state.settled_fills:
         raise InvalidEvent("fill id already used")
+    if event.event_id in _voided_fill_ids(state):
+        raise InvalidEvent("fill id was voided")
     _require_currency_match(state, event.instrument_id, event.instrument_currency)
+    if event.side == "sell":
+        _reserve_sell_quantity(state, event)
+    else:
+        _reserve_buy_cash(state, event)
     state.pending[event.event_id] = event
     state.effects[event.event_id] = Effect(
         kind="fill",
@@ -244,6 +258,8 @@ def _apply_fx(state: _State, event: FxEvent) -> None:
         raise InvalidEvent(f"fill {event.fill_id} is not pending")
     if fill.instrument_currency == "GBP" and event.fx_rate_to_gbp != Decimal("1"):
         raise InvalidEvent("GBP instruments require fx_rate_to_gbp of 1")
+    if fill.fx_rate_ceiling is not None and event.fx_rate_to_gbp > fill.fx_rate_ceiling:
+        raise InvalidEvent("fx rate exceeds the reserved ceiling")
     notional = gbp_notional(fill.quantity, fill.price, event.fx_rate_to_gbp)
     if notional <= 0:
         raise InvalidEvent("GBP notional rounds to zero; refusing a zero-value settlement")
@@ -261,6 +277,7 @@ def _apply_fx(state: _State, event: FxEvent) -> None:
         raise InvalidEvent("instrument currency does not match the open position")
 
     if fill.side == "buy":
+        _require_spendable(state, notional, "buy settlement", exclude_fill_id=fill.event_id)
         if state.cash < notional:
             raise NegativeCashRejected("buy settlement exceeds GBP cash")
         updated = position.replace(
@@ -307,6 +324,7 @@ def _apply_fx(state: _State, event: FxEvent) -> None:
     state.positions[fill.instrument_id] = updated
     del state.pending[fill.event_id]
     state.settled_fills[fill.event_id] = fill
+    state.settlement_order.setdefault(fill.instrument_id, []).append(event.event_id)
     state.effects[event.event_id] = effect
 
 
@@ -320,10 +338,14 @@ def _apply_fee(state: _State, event: FeeEvent) -> None:
         gbp = quantize_money(event.amount * event.fx_rate_to_gbp)
     if gbp <= 0:
         raise InvalidEvent("fee rounds to zero GBP")
+    _require_spendable(state, gbp, "fee")
     if state.cash < gbp:
         raise NegativeCashRejected("fee exceeds GBP cash")
-    if event.related_event_id is not None and event.related_event_id not in state.effects:
-        raise InvalidEvent("related_event_id does not match a prior event")
+    if event.related_event_id is not None:
+        if event.related_event_id not in state.effects:
+            raise InvalidEvent("related_event_id does not match a prior event")
+        if state.effects[event.related_event_id].kind not in ("fill", "fx"):
+            raise InvalidEvent("related_event_id must reference a fill or its FX settlement")
     state.cash = quantize_money(state.cash - gbp)
     state.fees[event.fee_type] = quantize_money(state.fees[event.fee_type] + gbp)
     state.effects[event.event_id] = Effect(
@@ -393,6 +415,8 @@ def _apply_reversal(state: _State, event: ReversalEvent) -> None:
     elif effect.kind == "fill":
         _reverse_fill(state, target_id)
     elif effect.kind == "fx":
+        if effect.side == "buy" and _later_sell_depends_on_buy(state, effect.instrument_id, target_id):
+            raise ReversalRejected("a later sell on this instrument depends on this buy; reversal refused")
         _reverse_fx(state, effect)
     elif effect.kind == "mark":
         _reverse_mark(state, target_id, effect)
@@ -467,6 +491,86 @@ def _reverse_mark(state: _State, target_id: str, effect: Effect) -> None:
         )
     else:
         state.positions[effect.instrument_id] = position.replace(clear_mark=True)
+
+
+def _apply_fill_void(state: _State, event: FillVoidEvent) -> None:
+    if event.fill_id not in state.pending:
+        raise InvalidEvent("fill is not pending")
+    del state.pending[event.fill_id]
+    state.effects[event.event_id] = Effect(kind="fill_void", fill_id=event.fill_id)
+
+
+def _reserve_sell_quantity(state: _State, event: FillEvent) -> None:
+    position = state.positions.get(event.instrument_id)
+    settled = position.quantity if position is not None else Decimal("0")
+    reserved = Decimal("0")
+    for pending in state.pending.values():
+        if pending.side == "sell" and pending.instrument_id == event.instrument_id:
+            reserved += pending.quantity
+    available = settled - reserved
+    if event.quantity > available:
+        raise OversellRejected("sell quantity exceeds settled long quantity net of pending sells")
+
+
+def _reserve_buy_cash(state: _State, event: FillEvent) -> None:
+    reservation = buy_reservation_gbp(event)
+    known, unknown = _other_buy_reservations(state, exclude_fill_id=None)
+    if reservation is None:
+        if unknown or known > 0:
+            raise InvalidEvent("available cash is UNKNOWN or already reserved; pending buy rejected")
+        return
+    if reservation <= 0:
+        raise InvalidEvent("GBP notional rounds to zero; refusing a zero-value fill")
+    if unknown:
+        raise InvalidEvent("available cash is UNKNOWN; pending buy rejected")
+    if quantize_money(known + reservation) > state.cash:
+        raise NegativeCashRejected("pending buy reservation exceeds available cash")
+
+
+def _other_buy_reservations(state: _State, exclude_fill_id: str | None) -> tuple[Decimal, bool]:
+    total = Decimal("0.00")
+    unknown = False
+    for pending in state.pending.values():
+        if pending.side != "buy" or pending.event_id == exclude_fill_id:
+            continue
+        amount = buy_reservation_gbp(pending)
+        if amount is None:
+            unknown = True
+        else:
+            total = quantize_money(total + amount)
+    return total, unknown
+
+
+def _require_spendable(state: _State, amount: Decimal, label: str, exclude_fill_id: str | None = None) -> None:
+    reserved, unknown = _other_buy_reservations(state, exclude_fill_id)
+    if unknown:
+        raise InvalidEvent(f"available cash is UNKNOWN; {label} rejected")
+    if quantize_money(state.cash - amount) < reserved:
+        raise NegativeCashRejected(f"{label} would consume cash reserved for a pending buy")
+
+
+def _later_sell_depends_on_buy(state: _State, instrument_id: str | None, buy_fx_id: str) -> bool:
+    if instrument_id is None:
+        return False
+    order = state.settlement_order.get(instrument_id, [])
+    if buy_fx_id not in order:
+        return False
+    start = order.index(buy_fx_id) + 1
+    for later_id in order[start:]:
+        if later_id in state.reversed_ids:
+            continue
+        later = state.effects.get(later_id)
+        if later is not None and later.side == "sell":
+            return True
+    return False
+
+
+def _voided_fill_ids(state: _State) -> set[str]:
+    voided: set[str] = set()
+    for effect in state.effects.values():
+        if effect.kind == "fill_void" and effect.fill_id is not None:
+            voided.add(effect.fill_id)
+    return voided
 
 
 def _cash_add(state: _State, delta: Decimal, message: str) -> None:

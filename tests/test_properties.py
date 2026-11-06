@@ -9,7 +9,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from sterling.errors import NegativeCashRejected
-from sterling.ledger.events import FillEvent, FxEvent
+from sterling.ledger.events import FillEvent
 from sterling.ledger.ledger import Ledger
 from sterling.ledger.money import quantize_money
 from sterling.rules.caps import daily_loss_threshold, per_trade_planned_risk
@@ -86,13 +86,10 @@ def test_deposit_replay_matches_the_sum(amounts: list[int]) -> None:
 def test_buy_above_cash_never_posts_the_settlement(extra: int) -> None:
     ledger = Ledger("100.00")
     quantity = Decimal(100 + extra)
-    ledger.post(FillEvent("buy-over", june(1, 10), "SYNTH-EQ", "buy", quantity, "1.00", "GBP"))
-    cash_before = ledger.view().cash_gbp
-    events_before = ledger.events
     with pytest.raises(NegativeCashRejected):
-        ledger.post(FxEvent("fx-over", june(1, 10, 1), "buy-over", "1"))
-    assert ledger.events == events_before
-    assert ledger.view().cash_gbp == cash_before
+        ledger.post(FillEvent("buy-over", june(1, 10), "SYNTH-EQ", "buy", quantity, "1.00", "GBP"))
+    assert ledger.events == ()
+    assert ledger.view().cash_gbp == Decimal("100.00")
     assert ledger.view().positions == ()
 
 
