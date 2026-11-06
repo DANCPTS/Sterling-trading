@@ -306,9 +306,7 @@ def validate_rules_document(document: Mapping[str, Any]) -> DeskRules:
     if schema_version != APPROVED_SCHEMA_VERSION or version != APPROVED_RULES_VERSION:
         raise UnapprovedRulesVersion(f"rules version {version!r} is not owner-approved; Stage 1 accepts only 0.2")
     if version_id != APPROVED_RULES_VERSION_ID:
-        raise UnapprovedRulesVersion(
-            f"rules version id {version_id!r} is not owner-approved; Stage 1 accepts only desk-rules-v0.2"
-        )
+        raise UnapprovedRulesVersion(f"rules version id {version_id!r} is not owner-approved; Stage 1 accepts only desk-rules-v0.2")
     if not owner_approved:
         raise UnapprovedRulesVersion("rules document is not marked owner-approved")
 

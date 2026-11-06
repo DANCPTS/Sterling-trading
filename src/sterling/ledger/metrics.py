@@ -1,9 +1,15 @@
 """Point-in-time daily-loss figures.
 
 Day loss is max(0, day-opening equity - adjusted equity). It is not an
-intra-day high-water mark and it is not a halt. Deposits and withdrawals
-since the baseline are removed from equity before the subtraction, so they
-do not reset the budget and a withdrawal is not itself a trading loss.
+intra-day high-water mark and it is not a halt. A later recovery reduces the
+reported figure. Stage 2 must latch a halt separately: once day loss reaches
+the threshold, new entries stay blocked for the rest of that trading day even
+if equity recovers. Deposits and withdrawals since the baseline are removed
+from equity before the subtraction, so they do not reset the budget and a
+withdrawal is not itself a trading loss.
+
+Valuation rows on the metrics are labels. ``all_open_positions_fresh`` is true
+only when every open position is FRESH. Stage 2 must fail closed otherwise.
 """
 
 from __future__ import annotations
@@ -12,10 +18,12 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
+from sterling.ledger.allocation import Allocation, allocate
 from sterling.ledger.calendar import london_date, require_aware
 from sterling.ledger.engine import DayBaseline, _State, equity_of
-from sterling.ledger.events import DepositEvent, FeeEvent, FxEvent, LedgerEvent, WithdrawalEvent
+from sterling.ledger.events import DepositEvent, LedgerEvent, WithdrawalEvent
 from sterling.ledger.money import quantize_money
+from sterling.ledger.valuation import PositionValuation, all_open_positions_fresh, open_valuations
 from sterling.rules.caps import daily_loss_threshold
 from sterling.rules.model import DeskRules
 
@@ -33,6 +41,8 @@ class DailyLossMetrics:
     day_loss_gbp: Decimal
     daily_loss_threshold_gbp: Decimal | None
     daily_loss_threshold_reached: bool | None
+    valuations: tuple[PositionValuation, ...]
+    all_open_positions_fresh: bool
 
 
 def daily_loss_metrics(
@@ -49,6 +59,8 @@ def daily_loss_metrics(
     require_aware(as_of)
     day = london_date(as_of)
     equity = equity_of(state)
+    valuations = open_valuations(state, as_of)
+    fresh = all_open_positions_fresh(valuations)
     baseline: DayBaseline | None = state.baselines.get(day)
     if baseline is None:
         return DailyLossMetrics(
@@ -61,6 +73,8 @@ def daily_loss_metrics(
             day_loss_gbp=_ZERO,
             daily_loss_threshold_gbp=None,
             daily_loss_threshold_reached=None,
+            valuations=valuations,
+            all_open_positions_fresh=fresh,
         )
     net = _net_external_since_baseline(state, events, baseline)
     adjusted = quantize_money(equity - net)
@@ -77,45 +91,28 @@ def daily_loss_metrics(
         day_loss_gbp=day_loss,
         daily_loss_threshold_gbp=threshold,
         daily_loss_threshold_reached=day_loss >= threshold,
+        valuations=valuations,
+        all_open_positions_fresh=fresh,
     )
+
+
+def fee_allocation(
+    state: _State,
+    events: tuple[LedgerEvent, ...] | list[LedgerEvent],
+) -> Allocation:
+    """Entry-fee pool and per-close nets. Does not change cash or equity."""
+    return allocate(state, events)
 
 
 def consecutive_net_closed_losses(
     state: _State,
     events: tuple[LedgerEvent, ...] | list[LedgerEvent],
 ) -> int:
-    """Count the trailing run of losing settled sells.
+    """Trailing run of closes whose net, after allocated fees, is negative.
 
-    Net means realised price P&L minus fees whose ``related_event_id`` is that
-    sell's fill id or FX id. Buy-side fees are not allocated. A zero net does
-    not change the streak. Reversed events are ignored. Nothing here halts.
+    Nothing here halts, and a zero net does not change the streak.
     """
-    fees_by_related: dict[str, Decimal] = {}
-    for event in events:
-        if event.event_id in state.reversed_ids or not isinstance(event, FeeEvent):
-            continue
-        if event.related_event_id is None:
-            continue
-        effect = state.effects[event.event_id]
-        current = fees_by_related.get(event.related_event_id, _ZERO)
-        fees_by_related[event.related_event_id] = quantize_money(current + effect.fee_delta)
-
-    streak = 0
-    for event in events:
-        if not isinstance(event, FxEvent) or event.event_id in state.reversed_ids:
-            continue
-        effect = state.effects[event.event_id]
-        if effect.side != "sell" or effect.fill_id is None:
-            continue
-        net = effect.realised_delta
-        net -= fees_by_related.get(event.event_id, _ZERO)
-        net -= fees_by_related.get(effect.fill_id, _ZERO)
-        net = quantize_money(net)
-        if net < 0:
-            streak += 1
-        elif net > 0:
-            streak = 0
-    return streak
+    return allocate(state, events).consecutive_net_closed_losses
 
 
 def _net_external_since_baseline(

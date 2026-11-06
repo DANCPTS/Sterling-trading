@@ -50,6 +50,8 @@ class Position:
     mark_price: Decimal | None = None
     mark_fx_to_gbp: Decimal | None = None
     mark_event_id: str | None = None
+    mark_timestamp: datetime | None = None
+    mark_source: str | None = None
 
     def replace(
         self,
@@ -59,6 +61,8 @@ class Position:
         mark_price: Decimal | None = None,
         mark_fx_to_gbp: Decimal | None = None,
         mark_event_id: str | None = None,
+        mark_timestamp: datetime | None = None,
+        mark_source: str | None = None,
         clear_mark: bool = False,
     ) -> Position:
         return Position(
@@ -67,10 +71,10 @@ class Position:
             quantity=self.quantity if quantity is None else quantity,
             total_cost_gbp=self.total_cost_gbp if total_cost_gbp is None else total_cost_gbp,
             mark_price=None if clear_mark else (self.mark_price if mark_price is None else mark_price),
-            mark_fx_to_gbp=(
-                None if clear_mark else (self.mark_fx_to_gbp if mark_fx_to_gbp is None else mark_fx_to_gbp)
-            ),
+            mark_fx_to_gbp=(None if clear_mark else (self.mark_fx_to_gbp if mark_fx_to_gbp is None else mark_fx_to_gbp)),
             mark_event_id=(None if clear_mark else (self.mark_event_id if mark_event_id is None else mark_event_id)),
+            mark_timestamp=None if clear_mark else (self.mark_timestamp if mark_timestamp is None else mark_timestamp),
+            mark_source=None if clear_mark else (self.mark_source if mark_source is None else mark_source),
         )
 
 
@@ -99,6 +103,8 @@ class Effect:
     prior_mark_price: Decimal | None = None
     prior_mark_fx: Decimal | None = None
     prior_mark_event_id: str | None = None
+    prior_mark_timestamp: datetime | None = None
+    prior_mark_source: str | None = None
 
 
 class _State:
@@ -341,11 +347,15 @@ def _apply_mark(state: _State, event: MarkEvent) -> None:
         prior_mark_price=position.mark_price,
         prior_mark_fx=position.mark_fx_to_gbp,
         prior_mark_event_id=position.mark_event_id,
+        prior_mark_timestamp=position.mark_timestamp,
+        prior_mark_source=position.mark_source,
     )
     state.positions[position.instrument_id] = position.replace(
         mark_price=event.price,
         mark_fx_to_gbp=event.fx_rate_to_gbp,
         mark_event_id=event.event_id,
+        mark_timestamp=event.timestamp,
+        mark_source=event.source,
     )
 
 
@@ -452,6 +462,8 @@ def _reverse_mark(state: _State, target_id: str, effect: Effect) -> None:
             mark_price=effect.prior_mark_price,
             mark_fx_to_gbp=effect.prior_mark_fx,
             mark_event_id=effect.prior_mark_event_id,
+            mark_timestamp=effect.prior_mark_timestamp,
+            mark_source=effect.prior_mark_source,
         )
     else:
         state.positions[effect.instrument_id] = position.replace(clear_mark=True)
@@ -487,7 +499,13 @@ def _assert_invariants(state: _State) -> None:
         if position.quantity == 0 and position.total_cost_gbp != 0:
             raise LedgerRejected("flat position still carries cost")
         marked = position.mark_price is not None
-        if marked != (position.mark_fx_to_gbp is not None) or marked != (position.mark_event_id is not None):
+        mark_parts = (
+            position.mark_fx_to_gbp is not None,
+            position.mark_event_id is not None,
+            position.mark_timestamp is not None,
+            position.mark_source is not None,
+        )
+        if any(part != marked for part in mark_parts):
             raise LedgerRejected("mark fields are inconsistent")
     overlap = set(state.pending) & set(state.settled_fills)
     if overlap:

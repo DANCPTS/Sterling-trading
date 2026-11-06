@@ -21,16 +21,20 @@ rewrites its own hash is still rejected when the pin does not match.
   exceeds £2.50.
 - Daily-loss threshold = `min(1% of day-opening equity, £5.00)`, same rounding.
   The behaviour flag is `reactive_halt`. `guaranteed_loss_cap` is false. Stage 1
-  calculates the figure and does not halt, so a recorded day loss can exceed
-  the threshold.
+  calculates a point-in-time figure and does not halt, so a recorded day loss
+  can exceed the threshold and a later recovery reduces the reported figure.
+  That figure is not a latch.
 - Total open planned risk is at most 1% of equity. There is no second absolute
   ceiling on this cap. It is not enforced in Stage 1.
 - Long only, unleveraged. No borrowing, shorts, CFDs, futures, options, or
   leveraged or inverse products.
 - Holding period 2–10 trading days, marked provisional. Not enforced.
 - Halt after 3 consecutive net closed losses. Restart is `human_only`. There is
-  no API that clears the streak. The ledger counts a provisional streak and
-  does not block the next event.
+  no API that clears the streak. The ledger counts the streak and does not
+  block the next event. A close is a net loss when price P&L minus allocated
+  entry fees minus exit fees is negative. Entry fees (commission, FX fee,
+  stamp duty/SDRT) are pooled with the open quantity and relieved pro-rata;
+  the remainder stays with the open position. See `docs/design.md`.
 - Regular-session orders only. The clock times of that session are not invented
   in v0.2; enforcement belongs to a later order gateway.
 - Live trading is false. The instrument allowlist is empty.
@@ -61,3 +65,22 @@ Even if `content_hash` is regenerated so the file is internally consistent:
 `parse_stage_config` is a separate gate. It requires `live: false` and
 `mode: simulated`, and it rejects broker and credential keys. `StageConfig`
 cannot be constructed with live trading enabled.
+
+## Stage 2 daily-loss halt
+
+Stage 1 keeps the point-in-time day-loss metric. Stage 2 must introduce a
+persistent, latched daily-loss halt. Once day loss reaches or exceeds min(£5,
+1% of day-opening equity), all new entries are blocked for the rest of the
+trading day even if equity recovers. The halt survives restarts. Reset requires
+the trading-day transition, fresh validated account data, and explicit human
+authorisation. There is no automatic reset on recovery.
+
+## Valuation freshness
+
+Ledger outputs and daily-loss metrics carry a status of `FRESH`, `STALE`,
+`MISSING`, or `COST_BASIS`, plus the mark timestamp and source when a mark
+exists. A mark is `FRESH` only for an `as_of` timestamp on the same
+Europe/London day, already in effect. Unmarked open positions are
+`COST_BASIS`. `view()` without `as_of` never reports `FRESH`. Stage 2 must
+fail closed on anything that is not `FRESH`. A stale or missing valuation is
+not permission to trade. Stage 1 does not block entries.

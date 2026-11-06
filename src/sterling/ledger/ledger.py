@@ -13,6 +13,7 @@ from decimal import ROUND_HALF_EVEN, Decimal
 from pathlib import Path
 
 from sterling.errors import IdempotencyConflict, InvalidEvent
+from sterling.ledger.allocation import ClosedTrade
 from sterling.ledger.calendar import london_date, require_aware
 from sterling.ledger.engine import (
     Position,
@@ -30,9 +31,11 @@ from sterling.ledger.metrics import (
     DailyLossMetrics,
     consecutive_net_closed_losses,
     daily_loss_metrics,
+    fee_allocation,
 )
 from sterling.ledger.money import quantize_money, require_non_negative_money
 from sterling.ledger.store import read_ledger, write_ledger
+from sterling.ledger.valuation import PositionValuation, all_open_positions_fresh, open_valuations, position_status
 from sterling.rules.model import DeskRules
 
 _AVG_QUANTUM = Decimal("0.00000001")
@@ -49,6 +52,10 @@ class PositionView:
     mark_fx_to_gbp: Decimal | None
     market_value_gbp: Decimal
     unrealised_pnl_gbp: Decimal
+    mark_timestamp: datetime | None
+    mark_source: str | None
+    valuation_status: str
+    unallocated_entry_fees_gbp: Decimal
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +69,8 @@ class LedgerView:
     pending_fill_ids: tuple[str, ...]
     consecutive_net_closed_losses: int
     event_ids: tuple[str, ...]
+    valuations: tuple[PositionValuation, ...]
+    all_open_positions_fresh: bool
 
 
 class Ledger:
@@ -161,9 +170,27 @@ class Ledger:
             return
         self.post(equity_snapshot(day, aware))
 
-    def view(self) -> LedgerView:
-        state = self._state()
-        return _view(state, self._events)
+    def view(self, as_of: datetime | None = None) -> LedgerView:
+        """Account view.
+
+        With ``as_of``, balances are the log up to that instant. Without it,
+        balances are current and no mark is reported as FRESH.
+        """
+        if as_of is None:
+            return _view(self._state(), self._events, None)
+        aware = require_aware(as_of)
+        events = [event for event in self._events if event.timestamp <= aware]
+        return _view(reduce_events(self.initial_cash_gbp, events), events, aware)
+
+    def closed_trades(self, as_of: datetime | None = None) -> tuple[ClosedTrade, ...]:
+        """Settled sells with entry fees allocated and exit fees included."""
+        if as_of is None:
+            events: list[LedgerEvent] = self._events
+        else:
+            aware = require_aware(as_of)
+            events = [event for event in self._events if event.timestamp <= aware]
+        state = reduce_events(self.initial_cash_gbp, events)
+        return fee_allocation(state, events).trades
 
     def daily_metrics(self, as_of: datetime, rules: DeskRules) -> DailyLossMetrics:
         aware = require_aware(as_of)
@@ -201,15 +228,18 @@ class Ledger:
         return [equity_snapshot(day, event.timestamp), event]
 
 
-def _view(state: _State, events: list[LedgerEvent]) -> LedgerView:
+def _view(state: _State, events: list[LedgerEvent], as_of: datetime | None) -> LedgerView:
+    allocation = fee_allocation(state, events)
     positions: list[PositionView] = []
     for instrument_id in sorted(state.positions):
         position = state.positions[instrument_id]
         if position.quantity == 0:
             continue
-        positions.append(_position_view(position))
+        unallocated = allocation.unallocated_entry_fees_gbp.get(instrument_id, Decimal("0.00"))
+        positions.append(_position_view(position, as_of, unallocated))
     baselines = tuple((day.isoformat(), baseline.equity_gbp) for day, baseline in sorted(state.baselines.items()))
     fees = tuple(sorted(state.fees.items()))
+    valuations = open_valuations(state, as_of)
     return LedgerView(
         cash_gbp=state.cash,
         equity_gbp=equity_of(state),
@@ -218,12 +248,14 @@ def _view(state: _State, events: list[LedgerEvent]) -> LedgerView:
         positions=tuple(positions),
         baselines=baselines,
         pending_fill_ids=tuple(sorted(state.pending)),
-        consecutive_net_closed_losses=consecutive_net_closed_losses(state, events),
+        consecutive_net_closed_losses=allocation.consecutive_net_closed_losses,
         event_ids=tuple(event.event_id for event in events),
+        valuations=valuations,
+        all_open_positions_fresh=all_open_positions_fresh(valuations),
     )
 
 
-def _position_view(position: Position) -> PositionView:
+def _position_view(position: Position, as_of: datetime | None, unallocated_entry_fees: Decimal) -> PositionView:
     value = market_value(position)
     average = (position.total_cost_gbp / position.quantity).quantize(
         _AVG_QUANTUM,
@@ -239,4 +271,8 @@ def _position_view(position: Position) -> PositionView:
         mark_fx_to_gbp=position.mark_fx_to_gbp,
         market_value_gbp=value,
         unrealised_pnl_gbp=quantize_money(value - position.total_cost_gbp),
+        mark_timestamp=position.mark_timestamp,
+        mark_source=position.mark_source,
+        valuation_status=position_status(position, as_of),
+        unallocated_entry_fees_gbp=unallocated_entry_fees,
     )

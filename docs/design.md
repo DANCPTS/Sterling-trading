@@ -47,9 +47,20 @@ positive rate the caller supplies. The library does not fetch a rate.
 Average cost is total GBP cost divided by quantity. A partial sale relieves
 `round(total_cost * sold / held)`. A sale that closes the position relieves the
 remaining cost exactly, so the pennies sum back to the original cost. Buy fees
-are not capitalised; they reduce cash immediately and therefore equity once.
-Realised P&L on a sale is proceeds minus cost relieved. It does not include
-fees. Equity is cash plus marked market value, so fees are not subtracted again.
+are not capitalised into that cost: they reduce cash immediately and therefore
+equity once. Equity is cash plus marked market value, so a fee is not
+subtracted a second time. Price P&L on a sale is proceeds minus cost relieved.
+
+The loss streak uses a separate attribution that does not post cash. Entry
+fees (commission, FX fee, stamp duty/SDRT) whose related id is a buy fill or
+that buy's FX settlement form one pool per instrument beside the open
+quantity. A sale of `q` from pool quantity `Q` takes
+`round_half_even(pool * q / Q)`. A sale that finishes the position takes the
+exact remainder. The rest stays with the open position. Exit fees related to
+the sell fill or its FX settlement are charged entirely to that close. Net
+result = price P&L − allocated entry fees − exit fees. A negative net is a
+loss for the streak, a positive net resets it, and zero leaves it. Reaching 3
+does not block anything, and nothing in the package clears the streak.
 
 Pending fills are outside equity until the FX event posts. A rejected FX does
 not roll back the fill that was already accepted. Callers that want both in the
@@ -79,16 +90,33 @@ lowers equity and lowers net external deposits by the same amount, and day loss
 does not move. A deposit does the opposite and also leaves day loss unchanged.
 
 This is a point-in-time formula, not an intra-day high-water mark. If equity
-falls and then recovers, day loss shrinks. A later risk engine can halt at the
-threshold; this stage only reports `daily_loss_threshold_reached` when day loss
-is greater than or equal to the threshold. The next event is still accepted.
+falls and then recovers, day loss shrinks. Stage 1 reports
+`daily_loss_threshold_reached` when day loss is greater than or equal to the
+threshold and still accepts the next event.
 
-The consecutive-loss counter used by the v0.2 rule is provisional. A closed
-result is a settled sell. Its net is realised price P&L minus fees whose
-`related_event_id` is that sell's fill id or FX id. A negative net increments
-the streak, a positive net resets it, and zero leaves it. Buy-side fees are not
-allocated to the close. Reaching 3 does not block anything, and nothing in the
-package clears the streak.
+Stage 2 must introduce a persistent, latched daily-loss halt. Once day loss
+reaches or exceeds min(£5, 1% of day-opening equity), all new entries are
+blocked for the rest of the trading day even if equity recovers. The halt
+survives restarts. Reset requires the trading-day transition, fresh validated
+account data, and explicit human authorisation. There is no automatic reset
+on recovery. The Stage 1 figure is not that latch.
+
+## Valuation freshness
+
+Each open position on `Ledger.view` and on the daily-loss metrics carries
+`mark_timestamp`, `mark_source`, and `valuation_status`:
+
+| Status | Meaning |
+| --- | --- |
+| `FRESH` | Current mark, `mark_timestamp <= as_of`, same Europe/London civil day. |
+| `STALE` | A mark exists but it is from another London day, after `as_of`, or `as_of` was not supplied. |
+| `COST_BASIS` | Open quantity with no mark. Equity uses cost. This is not a market valuation. |
+| `MISSING` | No open quantity. |
+
+`all_open_positions_fresh` is true only when there is at least one open
+position and every one of them is `FRESH`. Stage 2 must fail closed on
+anything that is not `FRESH`. Stale, missing, and cost-basis data are not
+permission to trade. Stage 1 still shows the accounting equity.
 
 ## Persistence
 
@@ -100,17 +128,20 @@ a recorded snapshot equity does not match. Replay does not call the wall clock,
 so a baseline captured on a June or March date is still that date after a
 restart in November.
 
-The checksum detects a partial edit. It is not an external signature: someone
-who rewrites the events and the checksum together has just written a different
-ledger.
+The checksum detects a partial edit. A truncated final line, a file cut off
+mid-write, or a checksum that does not match replay raises `PersistenceError`.
+The loader does not invent the missing tail or keep a half-applied event.
+`os.replace` publishes a finished file; a leftover temporary file is not the
+ledger path. The checksum is not an external signature: someone who rewrites
+the events and the checksum together has just written a different ledger.
 
 ## Deferred
 
 - Backtester. No results are produced here.
 - Journal.
-- Risk engine: threshold halt, open-risk check, holding-period check,
-  regular-session clock, allowlist enforcement, human restart.
-- Broker adapter and any market-data client.
+- Risk engine: the latched daily-loss halt described above, open-risk check,
+  holding-period check, regular-session clock, allowlist enforcement, human
+  restart. Stage 1 does not block entries.
+- Broker adapter and any market-data client. Marks are caller-supplied.
 - Statutory calculation of SDRT. The stamp line is an amount the caller posts.
-- Lot-level fee allocation. Average cost plus the related-id convention above
-  is the Stage 1 definition.
+- Fail-closed trading on non-FRESH valuations. Stage 1 only labels them.

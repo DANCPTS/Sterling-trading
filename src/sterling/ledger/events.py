@@ -157,13 +157,18 @@ class FeeEvent:
 
 @dataclass(frozen=True, slots=True)
 class MarkEvent:
-    """Mark a settled position. Price is in instrument currency."""
+    """Mark a settled position. Price is in instrument currency.
+
+    ``source`` names who supplied the mark. It is metadata. A source, including
+    the default ``unspecified``, is not permission to trade.
+    """
 
     event_id: str
     timestamp: datetime
     instrument_id: str
     price: Decimal
     fx_rate_to_gbp: Decimal
+    source: str = "unspecified"
 
     def __post_init__(self) -> None:
         check_event_id(self.event_id)
@@ -175,6 +180,8 @@ class MarkEvent:
             "fx_rate_to_gbp",
             require_fx_rate(self.fx_rate_to_gbp, label="fx_rate_to_gbp"),
         )
+        if not isinstance(self.source, str) or not self.source.strip() or len(self.source) > 64:
+            raise InvalidEvent("mark source must be a non-empty string of at most 64 characters")
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,9 +220,7 @@ class EquitySnapshotEvent:
             raise InvalidEvent(f"equity snapshot id must be {expected} for its Europe/London date")
 
 
-LedgerEvent = (
-    DepositEvent | WithdrawalEvent | FillEvent | FxEvent | FeeEvent | MarkEvent | ReversalEvent | EquitySnapshotEvent
-)
+LedgerEvent = DepositEvent | WithdrawalEvent | FillEvent | FxEvent | FeeEvent | MarkEvent | ReversalEvent | EquitySnapshotEvent
 
 
 def snapshot_id(day: date) -> str:
@@ -281,6 +286,7 @@ def event_to_dict(event: LedgerEvent) -> dict[str, object]:
             "instrument_id": event.instrument_id,
             "price": decimal_to_str(event.price),
             "fx_rate_to_gbp": decimal_to_str(event.fx_rate_to_gbp),
+            "source": event.source,
         }
     if isinstance(event, ReversalEvent):
         return {
@@ -345,12 +351,16 @@ def _event_from_dict(data: Mapping[str, Any]) -> LedgerEvent:
             related,
         )
     if event_type == "mark":
+        source = data.get("source", "unspecified")
+        if not isinstance(source, str):
+            raise PersistenceError("mark source must be a string")
         return MarkEvent(
             event_id,
             timestamp,
             _required_str(data, "instrument_id"),
             require_non_negative_price(_required_str(data, "price"), label="price"),
             require_fx_rate(_required_str(data, "fx_rate_to_gbp")),
+            source,
         )
     if event_type == "reversal":
         return ReversalEvent(

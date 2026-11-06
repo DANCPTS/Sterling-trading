@@ -117,8 +117,9 @@ def mark(
     instrument_id: str,
     price: str,
     fx_rate: str = "1",
+    source: str = "unspecified",
 ) -> None:
-    ledger.post(MarkEvent(event_id, timestamp, instrument_id, price, fx_rate))
+    ledger.post(MarkEvent(event_id, timestamp, instrument_id, price, fx_rate, source))
 
 
 def deposit(ledger: Ledger, event_id: str, timestamp: datetime, amount: str) -> None:

@@ -8,9 +8,10 @@ from pathlib import Path
 import pytest
 
 from sterling.errors import PersistenceError
+from sterling.ledger.events import FillEvent
 from sterling.ledger.ledger import Ledger
 from sterling.rules.loader import load_default_rules
-from tests.support import deposit, fee, june, settle
+from tests.support import deposit, fee, june, reversal, settle
 
 
 def _book() -> Ledger:
@@ -90,6 +91,78 @@ def test_tampered_amount_fails_the_checksum(tmp_path: Path) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     with pytest.raises(PersistenceError):
         Ledger.load(path)
+
+
+def test_pending_partial_and_reversal_survive_replay(tmp_path: Path) -> None:
+    ledger = Ledger("500.00")
+    settle(
+        ledger,
+        event_id="buy-a",
+        timestamp=june(1, 10, 0),
+        instrument_id="SYNTH-EQ",
+        side="buy",
+        quantity="2",
+        price="10.00",
+    )
+    settle(
+        ledger,
+        event_id="buy-b",
+        timestamp=june(1, 10, 5),
+        instrument_id="SYNTH-EQ",
+        side="buy",
+        quantity="3",
+        price="12.00",
+    )
+    settle(
+        ledger,
+        event_id="sell-part",
+        timestamp=june(1, 11),
+        instrument_id="SYNTH-EQ",
+        side="sell",
+        quantity="1",
+        price="11.00",
+    )
+    reversal(ledger, "rev-sell", june(1, 12), "fx-sell-part", "correction of the partial sale")
+    ledger.post(FillEvent("buy-pending", june(1, 13), "SYNTH-US", "buy", "1", "10", "USD"))
+    path = tmp_path / "replay.jsonl"
+    ledger.save(path)
+    loaded = Ledger.load(path)
+    assert loaded.view() == ledger.view()
+    assert loaded.events == ledger.events
+    # Reversing the sell's FX settlement puts that fill back to pending.
+    assert loaded.view().pending_fill_ids == ("buy-pending", "sell-part")
+    assert loaded.view().positions[0].quantity == Decimal("5")
+    assert loaded.closed_trades() == ()
+    again = Ledger.from_events(loaded.initial_cash_gbp, loaded.events)
+    assert again.view() == loaded.view()
+
+
+def test_truncated_partial_and_checksum_failures_refuse_to_load(tmp_path: Path) -> None:
+    ledger = _book()
+    path = tmp_path / "book.jsonl"
+    ledger.save(path)
+    original = path.read_text(encoding="utf-8")
+
+    path.write_text(original[: max(1, len(original) // 2)], encoding="utf-8")
+    with pytest.raises(PersistenceError):
+        Ledger.load(path)
+
+    lines = original.splitlines()
+    lines[-1] = lines[-1][:12]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(PersistenceError):
+        Ledger.load(path)
+
+    path.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+    with pytest.raises(PersistenceError):
+        Ledger.load(path)
+
+    leftover = tmp_path / "book.jsonl.tmp"
+    leftover.write_text(original[:40], encoding="utf-8")
+    path.write_text(original, encoding="utf-8")
+    loaded = Ledger.load(path)
+    assert loaded.view() == ledger.view()
+    assert leftover.read_text(encoding="utf-8") != original
 
 
 def test_duplicate_post_is_not_written_twice(tmp_path: Path) -> None:
