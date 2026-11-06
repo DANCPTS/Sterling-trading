@@ -1,0 +1,72 @@
+{
+  "schema_version": "1",
+  "version": "0.2",
+  "version_id": "desk-rules-v0.2",
+  "owner_approved": true,
+  "description": "Desk Rules v0.2. Owner-approved simulated-account constraints. Not a performance record and not market data.",
+  "account": {
+    "currency": "GBP",
+    "starting_capital": "500.00",
+    "simulated": true,
+    "live": false
+  },
+  "risk": {
+    "per_trade_planned_risk": {
+      "equity_fraction": "0.005",
+      "absolute_ceiling": "2.50",
+      "ceiling_currency": "GBP",
+      "includes_expected_costs": true,
+      "includes_adverse_execution_allowance": true
+    },
+    "daily_loss": {
+      "day_opening_equity_fraction": "0.01",
+      "absolute_ceiling": "5.00",
+      "ceiling_currency": "GBP",
+      "behaviour": "reactive_halt",
+      "guaranteed_loss_cap": false
+    },
+    "total_open_planned_risk": {
+      "equity_fraction": "0.01"
+    },
+    "consecutive_net_closed_loss_halt": {
+      "threshold": 3,
+      "restart": "human_only"
+    }
+  },
+  "products": {
+    "long_only": true,
+    "unleveraged": true,
+    "borrowing": false,
+    "shorts": false,
+    "cfds": false,
+    "futures": false,
+    "options": false,
+    "leveraged_or_inverse": false
+  },
+  "holding_period_trading_days": {
+    "min": 2,
+    "max": 10,
+    "provisional": true
+  },
+  "orders": {
+    "regular_session_only": true,
+    "live_trading": false,
+    "instrument_allowlist": []
+  },
+  "day_boundary": {
+    "timezone": "Europe/London",
+    "local_time": "00:00",
+    "baseline": "first_fresh_validated_equity_snapshot",
+    "baseline_persisted": true,
+    "adjusted_equity": "marked_to_market_minus_net_external_deposits_since_baseline",
+    "withdrawals": "negative_external_flow",
+    "day_loss": "max(0, day_opening_equity - adjusted_current_equity)",
+    "fees_and_fx_counted_once_via_equity": true,
+    "external_flows_do_not_reset_budget": true
+  },
+  "ceilings_policy": {
+    "absolute": true,
+    "changeable_only_by_new_owner_approved_rules_version": true
+  },
+  "content_hash": "d28912d913d9b8d066dca38811c207f921764294dba72c5392aa49523073279c"
+}
