@@ -6,3 +6,7 @@ The instrument ids (`SYNTH-EQ`, `SYNTH-US`, and similar) are labels invented for
 the ledger tests. Prices, FX rates, fees, and fills are hand-written decimals.
 They are not market data, not a historical series, and not a backtest result.
 No figure in these tests is a claim about trading profitability.
+
+Stage 2 Gate 1 tests that pass a fixture quote age, source, or session label
+are isolated from the owner policy. Those numbers are not approved settings,
+and the approved instrument allowlist stays empty.

@@ -1,0 +1,83 @@
+{
+  "schema_version": "1",
+  "version": "1",
+  "version_id": "stage2-gate1-policy-v1",
+  "owner_approved": true,
+  "gate": "stage2-gate1",
+  "description": "Stage 2 Gate 1 owner-approved policy for pure contracts and Decimal budgets. Not runtime enforcement, not a performance record, and not market data.",
+  "stage1_rules_version_id": "desk-rules-v0.2",
+  "stage1_content_hash": "d28912d913d9b8d066dca38811c207f921764294dba72c5392aa49523073279c",
+  "account": {
+    "currency": "GBP",
+    "starting_capital": "500.00",
+    "simulated": true,
+    "live": false
+  },
+  "budgets": {
+    "per_trade_equity_fraction": "0.005",
+    "per_trade_absolute_ceiling_gbp": "2.50",
+    "per_trade_basis": "fresh_validated_current_equity",
+    "per_trade_includes_expected_costs": true,
+    "per_trade_includes_adverse_allowance": true,
+    "daily_loss_equity_fraction": "0.01",
+    "daily_loss_absolute_ceiling_gbp": "5.00",
+    "daily_loss_basis": "fresh_validated_day_opening_equity",
+    "daily_loss_guaranteed_cap": false,
+    "aggregate_open_planned_risk_equity_fraction": "0.01",
+    "aggregate_includes_pending": true,
+    "concentration_equity_fraction": "0.25",
+    "concentration_includes_current_and_pending_notional": true,
+    "concentration_price_basis": "conservative_supplied_price_and_fx",
+    "max_simultaneous_position_episodes": 4,
+    "episodes_include_pending_openings": true,
+    "reentry_after_flat_is_distinct": true,
+    "partial_fill_or_exit_is_not_new_episode": true,
+    "consecutive_net_loss_episode_threshold": 3,
+    "loss_streak_restart": "owner_only",
+    "available_budget_rounding": "down",
+    "risk_rounding": "up",
+    "day_loss_formula": "max(0, day_opening_equity - (marked_equity - net_external_deposits_since_baseline))"
+  },
+  "products": {
+    "long_only": true,
+    "unleveraged": true,
+    "borrowing": false,
+    "shorts": false,
+    "cfds": false,
+    "futures": false,
+    "options": false,
+    "leveraged_or_inverse": false
+  },
+  "orders": {
+    "live_trading": false,
+    "instrument_allowlist": [],
+    "regular_session_only": true
+  },
+  "day_boundary": {
+    "timezone": "Europe/London",
+    "local_time": "00:00",
+    "opening_baseline": "first_fresh_validated_opening_snapshot"
+  },
+  "operational_numerical_settings": {
+    "quote_max_age": "UNAPPROVED_UNCONFIGURED",
+    "fx_max_age": "UNAPPROVED_UNCONFIGURED",
+    "session_clock": "UNAPPROVED_UNCONFIGURED",
+    "market_calendar": "UNAPPROVED_UNCONFIGURED",
+    "source_quality": "UNAPPROVED_UNCONFIGURED",
+    "default_decision": "DENY",
+    "fixture_policy_usable_as_owner_policy": false
+  },
+  "gate_boundary": {
+    "runtime_enforcement": false,
+    "halt_persistence": false,
+    "reset_application": false,
+    "ticket_issuance": false,
+    "atomic_stop_execution": false,
+    "os_isolation_verified": false,
+    "simulator_execution": false,
+    "execution_permission": "NOT_ISSUED",
+    "planned_cap_guarantees_realised_loss": false,
+    "stop_contract_proves_protection": false
+  },
+  "content_hash": "3de11ad3298fd0c0aa04cea45639290cc05bb6763d86ca62334057cc0ebe29db"
+}

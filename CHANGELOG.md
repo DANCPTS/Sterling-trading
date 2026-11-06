@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.0 - 2026-11-06
+
+Stage 2 Gate 1 only. Stage 1 ledger behaviour is unchanged.
+
+- Add an owner-approved Stage 2 policy for a 25% instrument concentration cap
+  and four simultaneous position episodes, citing the unchanged Desk Rules
+  v0.2 pin.
+- Add pure Decimal budget math: risk rounds up, available budgets round down,
+  and day loss, remaining risk, concentration, episodes, and cash are checked
+  without double-counting booked fees.
+- Add fail-closed validation for stops, products, quotes, FX, clocks, and
+  sessions. Quote and session numbers stay unapproved and deny. No execution
+  permission or ticket is issued.
+- Define reset and ticket request contracts. AI and a missing reason are
+  rejected. Nothing is persisted or applied.
+
 ## 0.1.2 - 2026-11-06
 
 - Rename the same-day mark label to `ACCOUNTING_SAME_DAY` and remove any flag
