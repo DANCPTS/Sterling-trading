@@ -83,6 +83,20 @@ invent a holiday calendar.
 A streak reset opens an operational epoch. It keeps the economic history. A
 later correction to that history re-latches. It does not clear a daily halt.
 
+`test_daily_loss_resets_only_on_a_later_verified_day` runs that reset through
+the owner socket. Same-day, blank reason, an unverified day with no fresh
+opening baseline, and a different uid are refused. After a real reopen the
+audit row is still there, `DAILY_LOSS` is gone, `OWNER_PAUSE` remains, and a
+new entry is still denied. Replaying the same nonce returns the committed
+reset and does not clear the other halt.
+
+`test_pre_reset_fee_reveals_three_losses_and_relatches` latches on three later
+losses, clears that latch through the owner socket, then appends a commission
+on the original winning buy. That buy's episode becomes a loss, the first
+three episodes are now a losing run, and `LOSS_STREAK` latches again. The
+epoch still records the pre-correction net. The original buy and sell stay in
+the ledger ahead of the fee. A reopen keeps the new latch.
+
 The owner endpoint checks `SO_PEERCRED`. A JSON owner flag is not a
 credential. AI proposal messages have no reset operation.
 
