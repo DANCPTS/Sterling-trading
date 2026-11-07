@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0 - 2026-11-07
+
+Stage 2 Gate 2. Stage 1 ledger economics and the Gate 1 pure contracts are unchanged.
+
+- Add a local SQLite journal for durable halts, opening baselines, owner resets,
+  trusted synthetic ingress, and non-executable budget reservations.
+- Keep the actual-instrument allowlist empty. Unapproved quote, FX, source, and
+  session settings still deny. Synthetic fixture scope is explicit and is not
+  operational approval.
+- No simulator, executable ticket, broker, or network client is added.
+
 ## 0.2.0 - 2026-11-06
 
 Stage 2 Gate 1 only. Stage 1 ledger behaviour is unchanged.
