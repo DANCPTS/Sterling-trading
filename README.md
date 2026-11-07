@@ -63,6 +63,14 @@ Quote age, FX age, and session numbers are not approved and deny. A passing
 budget check does not issue permission to trade, latch a halt, or prove a
 stop. The Stage 1 rules pin is unchanged.
 
+## Stage 2 Gate 2
+
+[`docs/stage2-gate2.md`](docs/stage2-gate2.md) describes the durable journal.
+A reservation is a non-executable budget hold. The package does not place an
+order, issue a ticket, or run a simulator. The CI test job runs as root so it
+can create separate Linux users; the isolation evidence is what those users
+are denied, not what root can read.
+
 ## Run the checks
 
 ```bash
@@ -70,9 +78,10 @@ python -m pip install -e ".[dev]"
 python -m ruff check src tests
 python -m ruff format --check src tests
 python -m mypy src
-python -m pytest --cov=sterling --cov-report=term-missing
+sudo python -m pytest --cov=sterling --cov-branch --cov-report=term-missing
 ```
 
+The sudo step is what creates the separate test users and the tiny filesystem.
 GitHub Actions runs the same commands on Python 3.11 and 3.12. No paid service
 is required.
 
@@ -82,6 +91,7 @@ is required.
 src/sterling/rules/        Desk Rules v0.2, hash, budgets
 src/sterling/ledger/       Decimal ledger, metrics, JSONL store
 src/sterling/risk/         Stage 2 Gate 1 contracts, validation, budgets
+src/sterling/gate2/        Stage 2 Gate 2 journal, halts, non-executable holds
 src/sterling/placeholders/ backtester, journal, risk engine, broker
 docs/                      rules prose and design decisions
 tests/                     synthetic pytest suite

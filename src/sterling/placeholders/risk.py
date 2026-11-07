@@ -1,8 +1,9 @@
 """Later-stage placeholder.
 
 Stage 2 Gate 1 adds pure contracts, validation, and Decimal budgets in
-``sterling.risk``. This class still does not latch a halt, reject an order,
-or clear a streak. A budget result is not permission to trade.
+``sterling.risk``. Durable non-executable reservations live in ``sterling.gate2``.
+This class still does not latch a halt, reject an order, or clear a streak.
+A budget result is not permission to trade.
 
 Daily-loss and planned-risk figures can be calculated in Stage 1. Enforcing a
 halt, an order rejection, or a human restart is not implemented. There is no

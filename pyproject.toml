@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sterling"
-version = "0.2.0"
-description = "Offline simulated GBP ledger, desk rules, and Stage 2 Gate 1 risk contracts."
+version = "0.3.0"
+description = "Offline simulated GBP ledger, desk rules, and Stage 2 Gate 2 risk journal."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
@@ -29,6 +29,21 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "privileged: requires root so the suite can create Linux UIDs and a tiny filesystem",
+]
+
+[tool.coverage.run]
+branch = true
+parallel = true
+source = ["sterling"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+]
 
 [tool.ruff]
 target-version = "py311"
