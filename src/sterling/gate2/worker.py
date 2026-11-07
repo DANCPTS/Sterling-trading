@@ -9,12 +9,12 @@ import argparse
 import json
 import os
 import time
-from datetime import datetime
 from pathlib import Path
 
 from sterling.gate2.admit import admit
+from sterling.gate2.clock import FixtureClock, WallClock
 from sterling.gate2.ingress import ingest
-from sterling.gate2.models import AdmissionRequest, GenerationInput, TrustedClock
+from sterling.gate2.models import AdmissionRequest, GenerationInput
 from sterling.gate2.service import _generation, _proposal
 from sterling.gate2.store import open_store
 
@@ -24,6 +24,7 @@ def main() -> None:
     parser.add_argument("action", choices=("admit", "ingest"))
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--request", type=Path, required=True)
+    parser.add_argument("--clock-file", type=Path, default=None)
     parser.add_argument("--owner-anchor", type=Path, default=None)
     args = parser.parse_args()
     store = open_store(args.root, owner_anchor=args.owner_anchor)
@@ -35,10 +36,8 @@ def main() -> None:
         while not Path(start).exists():
             time.sleep(0.01)
     document = json.loads(args.request.read_text(encoding="utf-8"))
-    clock = TrustedClock(
-        as_of=datetime.fromisoformat(str(document["clock"]["as_of"])),
-        monotonic_ns=int(document["clock"]["monotonic_ns"]),
-    )
+    document.pop("clock", None)
+    clock = FixtureClock.load(args.clock_file).now() if args.clock_file is not None else WallClock().now()
     if args.action == "admit":
         result = admit(store, _as_request(document), clock)
     else:

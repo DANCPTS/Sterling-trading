@@ -111,6 +111,7 @@ def test_daily_loss_resets_only_on_a_later_verified_day(tmp_path: Path) -> None:
     reopened.close()
     coordinator.start()
     try:
+        coordinator.clock.set(DAY2)
         head = send(coordinator.owner, {"op": "status", "clock": _clock(DAY2)})
         unverified = _reset(
             coordinator.owner,
@@ -162,6 +163,7 @@ def test_daily_loss_resets_only_on_a_later_verified_day(tmp_path: Path) -> None:
 
     coordinator.start()
     try:
+        coordinator.clock.set(DAY2_LATER)
         head = send(coordinator.owner, {"op": "status", "clock": _clock(DAY2_LATER)})
         applied = _reset(
             coordinator.owner,
@@ -195,6 +197,7 @@ def test_daily_loss_resets_only_on_a_later_verified_day(tmp_path: Path) -> None:
     assert denied.reservation_id is None
     durable.close()
 
+    coordinator.clock.set(DAY2_LATER)
     coordinator.start()
     try:
         replayed = _reset(

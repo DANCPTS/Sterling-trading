@@ -8,15 +8,20 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from tests.gate2.support import MOMENT
+
+from sterling.gate2.clock import FixtureClock
 from sterling.gate2.service import serve
 
 
 class Coordinator:
     """Short-lived in-process coordinator. Restart it to reopen the store."""
 
-    def __init__(self, root: Path, directory: Path) -> None:
+    def __init__(self, root: Path, directory: Path, owner_anchor: Path | None = None) -> None:
         self.root = root
         self.directory = directory
+        self.owner_anchor = owner_anchor
+        self.clock = FixtureClock(MOMENT)
         self.stop = directory / "stop"
         self.owner = directory / "owner.sock"
         self.proposal = directory / "proposal.sock"
@@ -38,6 +43,8 @@ class Coordinator:
                 "owner_path": self.owner,
                 "ingress_path": self.ingress,
                 "stop_file": self.stop,
+                "clock_source": self.clock,
+                "owner_anchor": self.owner_anchor,
             },
             daemon=True,
         )
@@ -72,7 +79,7 @@ def _wait_until_accepting(path: Path) -> None:
     import time
 
     last_error = "socket was not accepting"
-    hello = b'{"op":"status","clock":{"as_of":"2026-06-01T09:00:00+01:00","monotonic_ns":1}}\n'
+    hello = b'{"op":"status"}\n'
     for _ in range(100):
         if path.exists():
             probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

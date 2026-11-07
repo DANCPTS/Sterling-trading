@@ -11,6 +11,7 @@ from pathlib import Path
 
 from tests.gate2.support import MOMENT, anchor, fresh_book, new_store
 
+from sterling.gate2.clock import FixtureClock
 from sterling.gate2.models import HaltName
 from sterling.gate2.service import serve
 from sterling.gate2.state import active_halts
@@ -36,6 +37,7 @@ def test_owner_pause_and_reset_use_the_socket_peer(tmp_path: Path) -> None:
             "owner_path": sockets / "owner.sock",
             "ingress_path": sockets / "ingress.sock",
             "stop_file": stop,
+            "clock_source": FixtureClock(MOMENT),
         },
         daemon=True,
     )

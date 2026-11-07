@@ -19,11 +19,27 @@ from sterling.gate2.store import open_store
 def _run(root: Path, fault: str, kind: str = "crash") -> subprocess.CompletedProcess[str]:
     path = root / "request.json"
     path.write_text(json.dumps(_payload("crash")), encoding="utf-8")
+    from tests.gate2.support import MOMENT
+
+    from sterling.gate2.clock import FixtureClock
+
+    FixtureClock(MOMENT).save(root / "coordinator-clock.json")
     env = os.environ.copy()
     env["STERLING_GATE2_FAULT"] = fault
     env["STERLING_GATE2_FAULT_KIND"] = kind
     return subprocess.run(
-        [sys.executable, "-m", "sterling.gate2.worker", "admit", "--root", str(root / "journal"), "--request", str(path)],
+        [
+            sys.executable,
+            "-m",
+            "sterling.gate2.worker",
+            "admit",
+            "--root",
+            str(root / "journal"),
+            "--request",
+            str(path),
+            "--clock-file",
+            str(root / "coordinator-clock.json"),
+        ],
         env=env,
         text=True,
         capture_output=True,
@@ -107,7 +123,18 @@ def _run_clean(root: Path) -> dict[str, object]:
     env.pop("STERLING_GATE2_FAULT", None)
     env.pop("STERLING_GATE2_FAULT_KIND", None)
     completed = subprocess.run(
-        [sys.executable, "-m", "sterling.gate2.worker", "admit", "--root", str(root / "journal"), "--request", str(path)],
+        [
+            sys.executable,
+            "-m",
+            "sterling.gate2.worker",
+            "admit",
+            "--root",
+            str(root / "journal"),
+            "--request",
+            str(path),
+            "--clock-file",
+            str(root / "coordinator-clock.json"),
+        ],
         env=env,
         text=True,
         capture_output=True,

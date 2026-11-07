@@ -19,6 +19,9 @@ _STOP = Decimal("0.01")
 
 
 def _race(root: Path, requests: list[dict[str, object]]) -> list[dict[str, object]]:
+    from sterling.gate2.clock import FixtureClock
+
+    FixtureClock(MOMENT).save(root / "coordinator-clock.json")
     start = root / "start"
     processes: list[subprocess.Popen[str]] = []
     ready_files: list[Path] = []
@@ -41,6 +44,8 @@ def _race(root: Path, requests: list[dict[str, object]]) -> list[dict[str, objec
                     str(root / "journal"),
                     "--request",
                     str(path),
+                    "--clock-file",
+                    str(root / "coordinator-clock.json"),
                 ],
                 env=env,
                 text=True,

@@ -100,6 +100,22 @@ the ledger ahead of the fee. A reopen keeps the new latch.
 The owner endpoint checks `SO_PEERCRED`. A JSON owner flag is not a
 credential. AI proposal messages have no reset operation.
 
+The coordinator clock is `WallClock` unless the process that constructs the
+coordinator passes a `FixtureClock`. Socket fields named `clock` are not
+read. Quote times and generation `as_of` values stay evidence and are
+compared with that coordinator clock. A proposal cannot move `last_clock`,
+freshen a stale generation, change the London day, or complete a reset.
+Host control of the wall clock is outside this boundary.
+
+`reconcile` republishes a journal checkpoint that is behind a verified chain
+and writes an audit event. It does not clear `OWNER_ANCHOR_LAG`,
+`OWNER_ANCHOR_MISSING`, or `OWNER_ANCHOR_MISMATCH`, and it does not rewrite
+the anchor. An anchor ahead of the database fails closed even if the journal
+checkpoint also lags. `confirm_anchor` records a chain event only when the
+anchor already matches the head, then stays blocked until the owner refreshes
+the anchor to that new head and confirms again. A mismatched anchor is not
+replaced.
+
 ## What is still deferred
 
 - Executable tickets, ticket consumption, and any simulator path. An absent

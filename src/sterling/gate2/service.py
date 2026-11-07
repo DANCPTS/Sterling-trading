@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from sterling.gate2.admit import admit, lookup, release_never_exported
+from sterling.gate2.clock import ClockSource, WallClock
 from sterling.gate2.errors import Gate2Error, ProtocolError
 from sterling.gate2.ingress import ingest
 from sterling.gate2.models import (
@@ -26,7 +27,6 @@ from sterling.gate2.models import (
     HoldingQuote,
     ResetRequest,
     StopEvidence,
-    TrustedClock,
     reject_generation_document,
 )
 from sterling.gate2.owner import apply_reset, owner_pause
@@ -37,7 +37,7 @@ from sterling.risk.contracts import EntryProposal, FixtureOperationalLimits, Sto
 _MAX_BYTES = 65536
 _PROPOSAL_OPS = frozenset({"propose", "lookup", "status", "protective_check"})
 _INGRESS_OPS = frozenset({"ingest", "release"})
-_OWNER_OPS = frozenset({"reset", "pause", "reconcile", "status"})
+_OWNER_OPS = frozenset({"reset", "pause", "reconcile", "confirm_anchor", "status"})
 
 
 def serve(
@@ -48,9 +48,14 @@ def serve(
     ingress_path: Path,
     stop_file: Path,
     owner_anchor: Path | None = None,
+    clock_source: ClockSource | None = None,
 ) -> None:
-    """Serve until ``stop_file`` appears. The process must be the risk uid when separated."""
+    """Serve until ``stop_file`` appears. The process must be the risk uid when separated.
+
+    ``clock_source`` is owned by this process. Socket payloads cannot replace it.
+    """
     store = open_store(root, owner_anchor=owner_anchor)
+    clock = clock_source if clock_source is not None else WallClock()
     if store.identity.os_identity_separated and os.geteuid() != store.identity.risk_uid:
         store.close()
         raise SystemExit("service must run as the risk uid")
@@ -68,7 +73,7 @@ def serve(
             for server in readable:
                 connection, _addr = server.accept()
                 try:
-                    _handle(store, connection, sockets[server])
+                    _handle(store, connection, sockets[server], clock)
                 finally:
                     connection.close()
     finally:
@@ -96,7 +101,7 @@ def _bind(path: Path, *, mode: int) -> socket.socket:
     return server
 
 
-def _handle(store: Gate2Store, connection: socket.socket, channel: str) -> None:
+def _handle(store: Gate2Store, connection: socket.socket, channel: str, clock_source: ClockSource) -> None:
     peer = peer_from_socket(connection)
     raw = _read(connection)
     if raw is None:
@@ -143,12 +148,12 @@ def _handle(store: Gate2Store, connection: socket.socket, channel: str) -> None:
     if count > limit:
         _send(connection, {"ok": False, "reasons": ["RATE_LIMIT"], "execution_permission_issued": False})
         return
-    clock = _clock(document.get("clock"))
+    trusted = clock_source.now()
     if op == "status":
         _send(connection, _status(store))
         return
     if op == "propose":
-        result = admit(store, _proposal(document), clock)
+        result = admit(store, _proposal(document), trusted)
         _send(connection, _dump(result))
         return
     if op == "lookup":
@@ -162,16 +167,16 @@ def _handle(store: Gate2Store, connection: socket.socket, channel: str) -> None:
         _send(connection, _dump(result))
         return
     if op == "reset":
-        result = apply_reset(store, _reset(document), clock, peer)
+        result = apply_reset(store, _reset(document), trusted, peer)
         _send(connection, _dump(result))
         return
     if op == "pause":
-        result = owner_pause(store, clock, peer, reason=str(document.get("reason", "")))
+        result = owner_pause(store, trusted, peer, reason=str(document.get("reason", "")))
         _send(connection, _dump(result))
         return
     if op == "reconcile":
         try:
-            checkpoint = store.reconcile_checkpoint()
+            checkpoint = store.reconcile_checkpoint(actor_uid=peer.uid)
             _send(
                 connection,
                 {
@@ -185,6 +190,22 @@ def _handle(store: Gate2Store, connection: socket.socket, channel: str) -> None:
         except (Gate2Error, OSError) as exc:
             _send(connection, {"ok": False, "reasons": [str(exc)], "execution_permission_issued": False})
         return
+    if op == "confirm_anchor":
+        try:
+            outcome = store.confirm_owner_anchor(actor_uid=peer.uid)
+        except Gate2Error as exc:
+            _send(connection, {"ok": False, "reasons": [str(exc)], "execution_permission_issued": False, "ticket_issued": False})
+            return
+        _send(
+            connection,
+            {
+                "ok": outcome == "CONFIRMED",
+                "reasons": [outcome],
+                "execution_permission_issued": False,
+                "ticket_issued": False,
+            },
+        )
+        return
     if op == "release":
         result = release_never_exported(
             store,
@@ -197,7 +218,7 @@ def _handle(store: Gate2Store, connection: socket.socket, channel: str) -> None:
     if op == "ingest":
         try:
             reject_generation_document(document)
-            result = ingest(store, _generation(document), clock, peer_uid=peer.uid)
+            result = ingest(store, _generation(document), trusted, peer_uid=peer.uid)
         except ProtocolError as exc:
             _send(connection, {"ok": False, "reasons": [str(exc)], "execution_permission_issued": False, "ticket_issued": False})
             return
@@ -281,13 +302,6 @@ def _dump(result: object) -> dict[str, object]:
         "token": None,
         "non_executable": True,
     }
-
-
-def _clock(value: object) -> TrustedClock:
-    if not isinstance(value, dict):
-        raise ProtocolError("clock is required")
-    as_of = datetime.fromisoformat(str(value["as_of"]))
-    return TrustedClock(as_of=as_of, monotonic_ns=int(value["monotonic_ns"]))
 
 
 def _proposal(document: dict[str, Any]) -> AdmissionRequest:

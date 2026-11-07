@@ -49,6 +49,7 @@ def new_store(
     ingress_uid: int | None = None,
     ai_uid: int | None = None,
     risk_uid: int | None = None,
+    require_owner_anchor: bool | None = None,
 ) -> Gate2Store:
     uid = os.getuid()
     return provision_store(
@@ -62,6 +63,7 @@ def new_store(
         os_identity_separated=separated,
         synthetic_fixture_scope=fixture_scope,
         created_at="2026-06-01T08:00:00+00:00",
+        require_owner_anchor=require_owner_anchor,
     )
 
 

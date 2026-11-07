@@ -156,7 +156,7 @@ class Gate2Store:
 
     def publish_checkpoint(self, *, owner_copy: Path | None = None) -> Checkpoint:
         """Publish the committed head. Failure leaves a lag that blocks admission."""
-        if self.blocked not in {None, "CHECKPOINT_LAG"}:
+        if self.blocked not in {None, "CHECKPOINT_LAG", "OWNER_ANCHOR_LAG", "OWNER_ANCHOR_MISSING"}:
             raise StoreBlocked(self.blocked or "BLOCKED")
         fault_point("before_checkpoint")
         try:
@@ -174,45 +174,115 @@ class Gate2Store:
             self.blocked = None
         return snapshot
 
-    def reconcile_checkpoint(self) -> Checkpoint:
-        """Owner path for a checkpoint that lags a verified chain. Halts stay."""
-        reason = verify_chain(self.connection)
-        if reason is not None:
-            raise StoreBlocked(reason)
-        self.blocked = None
-        self._checkpoint_dirty = False
-        try:
-            return self.publish_checkpoint()
-        except StoreUnavailable:
-            self.blocked = "CHECKPOINT_LAG"
-            raise
+    def reconcile_checkpoint(self, *, actor_uid: int | None = None) -> Checkpoint:
+        """Republish a journal checkpoint that lags a verified chain.
 
-    def recheck_owner_anchor(self, path: Path | None = None) -> str | None:
-        """Clear an anchor lag after the owner has written a matching copy."""
-        anchor_path = path if path is not None else self.owner_anchor
-        if anchor_path is None:
-            self.blocked = "OWNER_ANCHOR_MISSING"
-            return self.blocked
+        This does not clear an owner-anchor miss, lag, or mismatch, and it
+        does not rewrite the database or the owner anchor.
+        """
+        if self.blocked not in {None, "CHECKPOINT_LAG"}:
+            raise StoreBlocked(self.blocked or "BLOCKED")
         chain_problem = verify_chain(self.connection)
         if chain_problem is not None:
             raise StoreBlocked(chain_problem)
         checkpoint = _read_checkpoint_file(self.checkpoint_path)
-        anchor = _read_checkpoint_file(anchor_path)
         head_seq, head_hash = self.head()
-        if checkpoint is None or checkpoint.sequence != head_seq or checkpoint.chain_hash != head_hash:
+        if checkpoint is None:
+            raise StoreBlocked("CHECKPOINT_MISSING")
+        if checkpoint.sequence > head_seq:
+            raise StoreBlocked("CHECKPOINT_ROLLBACK")
+        if checkpoint.sequence == head_seq and checkpoint.chain_hash != head_hash:
+            raise StoreBlocked("CHECKPOINT_HASH_MISMATCH")
+        _refuse_anchor_ahead(self.identity, self.root, self.owner_anchor, head_seq, head_hash)
+        if checkpoint.sequence == head_seq and checkpoint.chain_hash == head_hash:
+            return self._finish_checkpoint_repair(checkpoint)
+        actor = self.identity.owner_uid if actor_uid is None else actor_uid
+        self._append_control_audit(actor, "CHECKPOINT_RECONCILE", "republish verified checkpoint")
+        try:
+            published = self.publish_checkpoint()
+        except StoreUnavailable:
             self.blocked = "CHECKPOINT_LAG"
-            return self.blocked
+            raise
+        return self._finish_checkpoint_repair(published)
+
+    def confirm_owner_anchor(self, *, actor_uid: int) -> str:
+        """Accept an owner anchor only when it already matches the verified head.
+
+        The first match records a chain event and stays blocked until the owner
+        refreshes the anchor to that new head. A mismatch is not rewritten.
+        """
+        if not self.identity.require_owner_anchor:
+            raise StoreBlocked("OWNER_ANCHOR_NOT_REQUIRED")
+        if self.blocked not in {None, "OWNER_ANCHOR_LAG", "OWNER_ANCHOR_MISSING"}:
+            raise StoreBlocked(self.blocked or "BLOCKED")
+        chain_problem = verify_chain(self.connection)
+        if chain_problem is not None:
+            raise StoreBlocked(chain_problem)
+        head_seq, head_hash = self.head()
+        checkpoint = _read_checkpoint_file(self.checkpoint_path)
+        if checkpoint is None or checkpoint.sequence != head_seq or checkpoint.chain_hash != head_hash:
+            raise StoreBlocked("CHECKPOINT_NOT_CURRENT")
+        anchor = _read_anchor(self.identity, self.root, self.owner_anchor)
         if anchor is None:
             self.blocked = "OWNER_ANCHOR_MISSING"
-            return self.blocked
-        if anchor.sequence != checkpoint.sequence or anchor.chain_hash != checkpoint.chain_hash:
-            self.blocked = "OWNER_ANCHOR_LAG" if anchor.sequence < checkpoint.sequence else "OWNER_ANCHOR_MISMATCH"
-            if self.blocked == "OWNER_ANCHOR_MISMATCH":
+            raise StoreBlocked("OWNER_ANCHOR_MISSING")
+        if not _anchor_matches(self.identity, anchor, head_seq, head_hash):
+            if anchor.sequence > head_seq or (anchor.sequence == head_seq and anchor.chain_hash != head_hash):
+                self.blocked = "OWNER_ANCHOR_MISMATCH"
                 raise StoreBlocked("OWNER_ANCHOR_MISMATCH")
-            return self.blocked
+            self.blocked = "OWNER_ANCHOR_LAG"
+            raise StoreBlocked("OWNER_ANCHOR_LAG")
+        last = self.connection.execute("SELECT kind FROM chain ORDER BY seq DESC LIMIT 1").fetchone()
+        if last is None or str(last["kind"]) != "OWNER_ANCHOR_CONFIRM":
+            self._append_control_audit(actor_uid, "OWNER_ANCHOR_CONFIRM", "anchor matched the head before this confirm")
+            try:
+                self.publish_checkpoint()
+            except StoreUnavailable:
+                self.blocked = "CHECKPOINT_LAG"
+                raise
+            self.blocked = "OWNER_ANCHOR_LAG"
+            return "REFRESH_REQUIRED"
         self.blocked = None
-        self.owner_anchor = anchor_path
-        return None
+        self._checkpoint_dirty = False
+        return "CONFIRMED"
+
+    def recheck_owner_anchor(self, path: Path | None = None) -> str:
+        """Report whether the anchor matches. This does not clear a block."""
+        head_seq, head_hash = self.head()
+        anchor = _read_anchor(self.identity, self.root, path if path is not None else self.owner_anchor)
+        if anchor is None:
+            return "OWNER_ANCHOR_MISSING"
+        if _anchor_matches(self.identity, anchor, head_seq, head_hash):
+            return "MATCH"
+        if anchor.sequence > head_seq or (anchor.sequence == head_seq and anchor.chain_hash != head_hash):
+            return "OWNER_ANCHOR_MISMATCH"
+        return "OWNER_ANCHOR_LAG"
+
+    def _finish_checkpoint_repair(self, published: Checkpoint) -> Checkpoint:
+        block = _anchor_lag_or_missing(self.identity, self.root, self.owner_anchor, published.sequence, published.chain_hash)
+        if block is not None:
+            self.blocked = block
+            raise StoreBlocked(block)
+        self.blocked = None
+        return published
+
+    def _append_control_audit(self, actor_uid: int, kind: str, reason: str) -> None:
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            seq = self.append_event(self.connection, kind, {"actor_uid": actor_uid, "reason": reason})
+            self.connection.execute(
+                """
+                INSERT INTO audit (chain_seq, kind, actor_uid, reason, details, outcome)
+                VALUES (?, ?, ?, ?, '', 'RECORDED')
+                """,
+                (seq, kind, actor_uid, reason),
+            )
+            self.connection.execute("COMMIT")
+        except Exception:
+            with suppress(sqlite3.Error):
+                self.connection.execute("ROLLBACK")
+            raise
+        self._checkpoint_dirty = True
 
     def _read_head_checkpoint(self) -> Checkpoint:
         seq, link = self.head()
@@ -252,6 +322,7 @@ def provision_store(
     os_identity_separated: bool,
     synthetic_fixture_scope: bool,
     created_at: str,
+    require_owner_anchor: bool | None = None,
     policy: Stage2Policy | None = None,
 ) -> Gate2Store:
     """Create a new journal. An existing database is never overwritten."""
@@ -266,6 +337,7 @@ def provision_store(
         raise StoreBlocked("UID_INVALID")
     if os_identity_separated and len(set(uids)) != 4:
         raise StoreBlocked("UID_NOT_SEPARATED")
+    anchor_required = os_identity_separated if require_owner_anchor is None else require_owner_anchor
     loaded = policy if policy is not None else load_default_policy()
     if loaded.instrument_allowlist != ():
         raise StoreBlocked("ALLOWLIST_NOT_EMPTY")
@@ -290,7 +362,7 @@ def provision_store(
             ai_uid=ai_uid,
             os_identity_separated=os_identity_separated,
             synthetic_fixture_scope=synthetic_fixture_scope,
-            require_owner_anchor=os_identity_separated,
+            require_owner_anchor=anchor_required,
         )
         connection.execute("BEGIN IMMEDIATE")
         connection.execute(
@@ -316,7 +388,7 @@ def provision_store(
                 1 if os_identity_separated else 0,
                 1 if synthetic_fixture_scope else 0,
                 created_at,
-                1 if os_identity_separated else 0,
+                1 if anchor_required else 0,
             ),
         )
         connection.execute("INSERT INTO current_generation (id, generation_id, admissible) VALUES (1, NULL, 0)")
@@ -446,6 +518,60 @@ def _initialise(connection: sqlite3.Connection) -> None:
     connection.execute("COMMIT")
 
 
+def _read_anchor(identity: StoreIdentity, root: Path, owner_anchor: Path | None) -> Checkpoint | None:
+    if not identity.require_owner_anchor:
+        return None
+    path = owner_anchor if owner_anchor is not None else root / "owner-anchor.json"
+    return _read_checkpoint_file(path)
+
+
+def _anchor_matches(identity: StoreIdentity, anchor: Checkpoint, head_seq: int, head_hash: str) -> bool:
+    return (
+        anchor.store_id == identity.store_id
+        and anchor.account_id == identity.account_id
+        and anchor.environment == identity.environment
+        and anchor.policy_hash == identity.policy_hash
+        and anchor.schema_version == SCHEMA_VERSION
+        and anchor.sequence == head_seq
+        and anchor.chain_hash == head_hash
+    )
+
+
+def _refuse_anchor_ahead(
+    identity: StoreIdentity,
+    root: Path,
+    owner_anchor: Path | None,
+    head_seq: int,
+    head_hash: str,
+) -> None:
+    anchor = _read_anchor(identity, root, owner_anchor)
+    if anchor is None:
+        return
+    if anchor.store_id != identity.store_id or anchor.policy_hash != identity.policy_hash:
+        raise StoreBlocked("OWNER_ANCHOR_MISMATCH")
+    if anchor.sequence > head_seq or (anchor.sequence == head_seq and anchor.chain_hash != head_hash):
+        raise StoreBlocked("OWNER_ANCHOR_MISMATCH")
+
+
+def _anchor_lag_or_missing(
+    identity: StoreIdentity,
+    root: Path,
+    owner_anchor: Path | None,
+    head_seq: int,
+    head_hash: str,
+) -> str | None:
+    if not identity.require_owner_anchor:
+        return None
+    anchor = _read_anchor(identity, root, owner_anchor)
+    if anchor is None:
+        return "OWNER_ANCHOR_MISSING"
+    if _anchor_matches(identity, anchor, head_seq, head_hash):
+        return None
+    if anchor.sequence > head_seq or (anchor.sequence == head_seq and anchor.chain_hash != head_hash):
+        raise StoreBlocked("OWNER_ANCHOR_MISMATCH")
+    return "OWNER_ANCHOR_LAG"
+
+
 def _startup_checks(
     connection: sqlite3.Connection,
     root: Path,
@@ -483,22 +609,12 @@ def _startup_checks(
         raise StoreBlocked("CHECKPOINT_ROLLBACK")
     if checkpoint.sequence == head_seq and checkpoint.chain_hash != head_hash:
         raise StoreBlocked("CHECKPOINT_HASH_MISMATCH")
+    # An anchor ahead of the database is a rollback even when the journal
+    # checkpoint itself is behind. Catching the checkpoint up cannot reach it.
+    _refuse_anchor_ahead(identity, root, owner_anchor, head_seq, head_hash)
     if checkpoint.sequence < head_seq:
         return "CHECKPOINT_LAG"
-    if identity.require_owner_anchor:
-        anchor_path = owner_anchor if owner_anchor is not None else root / "owner-anchor.json"
-        anchor = _read_checkpoint_file(anchor_path)
-        if anchor is None:
-            return "OWNER_ANCHOR_MISSING"
-        if anchor.store_id != identity.store_id or anchor.policy_hash != identity.policy_hash:
-            raise StoreBlocked("OWNER_ANCHOR_MISMATCH")
-        if anchor.sequence > checkpoint.sequence or (
-            anchor.sequence == checkpoint.sequence and anchor.chain_hash != checkpoint.chain_hash
-        ):
-            raise StoreBlocked("OWNER_ANCHOR_MISMATCH")
-        if anchor.sequence < checkpoint.sequence:
-            return "OWNER_ANCHOR_LAG"
-    return None
+    return _anchor_lag_or_missing(identity, root, owner_anchor, head_seq, head_hash)
 
 
 def _head(connection: sqlite3.Connection) -> tuple[int, str]:
