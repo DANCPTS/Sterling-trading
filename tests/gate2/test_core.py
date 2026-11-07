@@ -545,15 +545,11 @@ def test_unknown_pending_hold_is_retained(tmp_path: Path) -> None:
         ambiguous=("pend-1",),
     )
     assert "GENERATION_ANCHORED" not in ingested.reasons
-    row = store.connection.execute(
-        "SELECT state FROM reservations WHERE ledger_pending_fill_id = 'pend-1'"
-    ).fetchone()
+    row = store.connection.execute("SELECT state FROM reservations WHERE ledger_pending_fill_id = 'pend-1'").fetchone()
     assert row is not None and row["state"] == "UNKNOWN"
     refused = release_never_exported(store, "ledger-pend-1", peer_uid=store.identity.risk_uid, proof="NEVER_EXPORTED")
     assert "UNKNOWN_RETAINED" in refused.reasons
-    again = store.connection.execute(
-        "SELECT state FROM reservations WHERE reservation_id = 'ledger-pend-1'"
-    ).fetchone()
+    again = store.connection.execute("SELECT state FROM reservations WHERE reservation_id = 'ledger-pend-1'").fetchone()
     assert again is not None and again["state"] == "UNKNOWN"
 
 
