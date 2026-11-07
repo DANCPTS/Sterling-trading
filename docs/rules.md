@@ -68,12 +68,17 @@ cannot be constructed with live trading enabled.
 
 ## Stage 2 daily-loss halt
 
-Stage 1 keeps the point-in-time day-loss metric. Stage 2 must introduce a
+Stage 1 keeps the point-in-time day-loss metric. A later gate must introduce a
 persistent, latched daily-loss halt. Once day loss reaches or exceeds min(£5,
 1% of day-opening equity), all new entries are blocked for the rest of the
 trading day even if equity recovers. The halt survives restarts. Reset requires
 the trading-day transition, fresh validated account data, and explicit human
 authorisation. There is no automatic reset on recovery.
+
+Stage 2 Gate 1 does not implement that latch. See
+[stage2-gate1.md](stage2-gate1.md). It adds a separate policy version for the
+25% concentration cap and the four-episode cap, and it leaves this v0.2 pin
+unchanged.
 
 ## Valuation labels
 
@@ -84,12 +89,15 @@ means the mark's London civil date matches `as_of`. A mark from 09:00 is still
 just `ACCOUNTING_SAME_DAY` at 16:00. That status is not an execution quote.
 The ledger exposes no permission to trade.
 
-Stage 2 must independently verify maximum quote age, the timestamp (including
-future timestamps), the source, and validity before approving any order, and
-must fail closed otherwise.
+A later order gate must independently verify maximum quote age, the timestamp
+(including future timestamps), the source, and validity before approving any
+order, and must fail closed otherwise. Stage 2 Gate 1 performs those checks
+as pure validation. The numerical limits are not owner-approved, so the
+default is deny, and the check does not approve an order.
 
 Pending buys reserve cash when the GBP amount is known (consideration plus the
 caller-supplied fee allowance, using `fx_rate_ceiling` for non-GBP). Pending
 sells reserve settled quantity. If the GBP amount cannot be determined,
-available cash and exposure are `UNKNOWN`. Stage 2 must fail closed on
-`UNKNOWN`. A rejected FX settlement voids that fill in the same step.
+available cash and exposure are `UNKNOWN`. Gate 1 budget math fails closed
+on `UNKNOWN`. A rejected FX settlement voids that fill in the same step.
+That is not a runtime reservation.

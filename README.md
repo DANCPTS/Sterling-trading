@@ -1,8 +1,9 @@
 # Sterling
 
-Stage 1 of an offline, simulated GBP ledger for a UK retail desk. It loads a
-versioned rules file and keeps an append-only accounting record. It does not
-place orders, connect to a broker, or fetch prices.
+Offline, simulated GBP ledger for a UK retail desk, plus Stage 2 Gate 1 risk
+contracts. Stage 1 loads a versioned rules file and keeps an append-only
+accounting record. Gate 1 adds typed budgets and validation. Neither places
+orders, connects to a broker, or fetches prices.
 
 ## Safety constraints
 
@@ -53,6 +54,15 @@ It does not halt.
 Backtester, journal, risk enforcement, and broker adapters are importable
 placeholders only. They raise `NotImplementedError`.
 
+## Stage 2 Gate 1
+
+[`docs/stage2-gate1.md`](docs/stage2-gate1.md) describes the pure contracts.
+At £500 the budgets are £2.50 per trade, £5 daily, £5 aggregate open risk,
+and £125 concentration, with at most four simultaneous position episodes.
+Quote age, FX age, and session numbers are not approved and deny. A passing
+budget check does not issue permission to trade, latch a halt, or prove a
+stop. The Stage 1 rules pin is unchanged.
+
 ## Run the checks
 
 ```bash
@@ -71,7 +81,8 @@ is required.
 ```text
 src/sterling/rules/        Desk Rules v0.2, hash, budgets
 src/sterling/ledger/       Decimal ledger, metrics, JSONL store
-src/sterling/placeholders/ backtester, journal, risk, broker
+src/sterling/risk/         Stage 2 Gate 1 contracts, validation, budgets
+src/sterling/placeholders/ backtester, journal, risk engine, broker
 docs/                      rules prose and design decisions
 tests/                     synthetic pytest suite
 ```

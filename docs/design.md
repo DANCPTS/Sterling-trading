@@ -102,12 +102,16 @@ falls and then recovers, day loss shrinks. Stage 1 reports
 `daily_loss_threshold_reached` when day loss is greater than or equal to the
 threshold and still accepts the next event.
 
-Stage 2 must introduce a persistent, latched daily-loss halt. Once day loss
-reaches or exceeds min(£5, 1% of day-opening equity), all new entries are
-blocked for the rest of the trading day even if equity recovers. The halt
+A later gate must introduce a persistent, latched daily-loss halt. Once day
+loss reaches or exceeds min(£5, 1% of day-opening equity), all new entries
+are blocked for the rest of the trading day even if equity recovers. The halt
 survives restarts. Reset requires the trading-day transition, fresh validated
 account data, and explicit human authorisation. There is no automatic reset
 on recovery. The Stage 1 figure is not that latch.
+
+Stage 2 Gate 1, documented in `docs/stage2-gate1.md`, calculates the same
+point-in-time figure and a separate supplied halt flag. It does not persist
+the flag, clear it, or block ledger events.
 
 ## Accounting valuation labels
 
@@ -120,9 +124,11 @@ on recovery. The Stage 1 figure is not that latch.
 | `ACCOUNTING_COST_BASIS` | Open quantity and no mark. Equity uses cost. |
 | `ACCOUNTING_NO_OPEN_QUANTITY` | Flat position. |
 
-Stage 2 must independently verify maximum quote age, the timestamp (including
-future timestamps), the source, and validity before approving any order, and
-must fail closed otherwise. Stage 1 does not expose a permission-to-trade flag.
+A later order gate must independently verify maximum quote age, the timestamp
+(including future timestamps), the source, and validity before approving any
+order, and must fail closed otherwise. Stage 1 does not expose a
+permission-to-trade flag. Stage 2 Gate 1 validates the quote structure and
+still does not approve an order: those numerical limits are unconfigured.
 
 ## Pending reservations
 
@@ -158,9 +164,10 @@ file, not a proof of origin.
 
 - Backtester. No results are produced here.
 - Journal.
-- Risk engine: the latched daily-loss halt described above, open-risk check,
-  holding-period check, regular-session clock, allowlist enforcement, human
-  restart. Stage 1 does not block entries.
+- Risk enforcement: the latched daily-loss halt described above, order
+  rejection, holding-period check, an approved session clock, allowlist
+  enforcement, and human restart. Stage 2 Gate 1 defines the pure checks and
+  does not block entries or persist a halt.
 - Broker adapter and any market-data client. Marks are caller-supplied.
 - Statutory calculation of SDRT. The stamp line is an amount the caller posts.
 - Execution checks on quote age, future timestamps, source, and validity.
