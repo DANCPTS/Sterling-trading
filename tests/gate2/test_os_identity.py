@@ -71,12 +71,15 @@ def test_ai_uid_cannot_read_journal_or_call_owner_socket(tmp_path: Path) -> None
     os.chown(sockets, accounts["sterling-g2-risk"].pw_uid, accounts["sterling-g2-risk"].pw_gid)
     os.chmod(sockets, 0o755)
     stop = base / "stop"
+    source = _grant_import_path()
     service = subprocess.Popen(
         [
             "runuser",
             "-u",
             "sterling-g2-risk",
             "--",
+            "env",
+            f"PYTHONPATH={source}",
             sys.executable,
             "-m",
             "sterling.gate2",
@@ -135,6 +138,22 @@ def test_ai_uid_cannot_read_journal_or_call_owner_socket(tmp_path: Path) -> None
     finally:
         stop.write_text("stop", encoding="utf-8")
         service.wait(timeout=10)
+
+
+def _grant_import_path() -> Path:
+    """Let the unprivileged test users import this checkout.
+
+    CI installs the editable package for root. A separate uid does not see
+    root's site-packages, and it cannot import the source unless every
+    parent directory is searchable.
+    """
+    source = Path(__file__).resolve().parents[2] / "src"
+    for directory in [source, *source.parents]:
+        if directory == Path("/"):
+            break
+        mode = directory.stat().st_mode
+        os.chmod(directory, mode | 0o005)
+    return source
 
 
 def _accounts() -> dict[str, pwd.struct_passwd]:
