@@ -10,7 +10,7 @@ deducted. ``deduct_ocf=True`` is refused.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -275,6 +275,8 @@ def _run_path(
     static_weights: Mapping[str, Decimal] | None,
     apply_gate: bool,
     monthly_rebalance: bool = False,
+    no_trade_band: Decimal = ZERO,
+    cost_on: Callable[[date], CostModel] | None = None,
 ) -> tuple[tuple[NavRow, ...], tuple[Fill, ...], tuple[dict[str, object], ...], tuple[dict[str, object], ...], Decimal, Decimal]:
     sessions = tuple(prepared[next(iter(prepared))].bars)
     session_days = tuple(bar.session for bar in sessions)
@@ -297,9 +299,10 @@ def _run_path(
         if day < history_start or day > evaluate_end:
             continue
         opens = _prices(prepared, day, "open")
+        day_model = cost_on(day) if cost_on is not None else model
         if static_weights is not None and not entered_static and day >= evaluate_start:
             static_fills, traded = _rebalance(
-                book, static_weights, opens, instruments, model, limits.min_trade_notional_gbp, day, None
+                book, static_weights, opens, instruments, day_model, limits.min_trade_notional_gbp, day, None
             )
             fills.extend(static_fills)
             total_turnover += traded
@@ -307,12 +310,12 @@ def _run_path(
         if pending is not None and pending[0] == day and day >= evaluate_start:
             _fill_day, weights, signal_date = pending
             traded_fills, traded = _rebalance(
-                book, weights, opens, instruments, model, limits.min_trade_notional_gbp, day, signal_date
+                book, weights, opens, instruments, day_model, limits.min_trade_notional_gbp, day, signal_date
             )
             fills.extend(traded_fills)
             total_turnover += traded
             pending = None
-        dividend_fills = _dividends(book, prepared, day, instruments, model)
+        dividend_fills = _dividends(book, prepared, day, instruments, day_model)
         fills.extend(dividend_fills)
         closes = _prices(prepared, day, "close")
         nav, gross, weights_now = _mark(book, closes)
@@ -350,6 +353,7 @@ def _run_path(
                     limits,
                     asset_class,
                     nav,
+                    no_trade_band=no_trade_band,
                 )
                 if apply_gate
                 else None
@@ -402,6 +406,8 @@ def simulate(
     label: str = "research illustration",
     deduct_ocf: bool = False,
     include_benchmarks: bool = True,
+    no_trade_band: Decimal = ZERO,
+    cost_on: Callable[[date], CostModel] | None = None,
     fx_gbp_per_unit: Mapping[date, Decimal] | None = None,
     return_method: str = "auto",
 ) -> SimulationResult:
@@ -452,6 +458,8 @@ def simulate(
         strategy=strategy,
         static_weights=None,
         apply_gate=True,
+        no_trade_band=no_trade_band,
+        cost_on=cost_on,
     )
     benchmarks: list[tuple[str, Performance]] = []
     if include_benchmarks:
@@ -463,6 +471,7 @@ def simulate(
                 calendar=calendar,
                 model=model,
                 limits=limits,
+                cost_on=cost_on,
                 starting=starting,
                 start_eval=start_eval,
                 end_eval=end_eval,
@@ -498,6 +507,7 @@ def _benchmarks(
     starting: Decimal,
     start_eval: date,
     end_eval: date,
+    cost_on: Callable[[date], CostModel] | None = None,
 ) -> list[tuple[str, Performance]]:
     benchmarks: list[tuple[str, Performance]] = []
     for instrument in instruments:
@@ -515,6 +525,7 @@ def _benchmarks(
             strategy=None,
             static_weights=static,
             apply_gate=False,
+            cost_on=cost_on,
         )
         del bench_fills
         benchmarks.append(
@@ -540,6 +551,7 @@ def _benchmarks(
         static_weights=equal,
         apply_gate=False,
         monthly_rebalance=True,
+        cost_on=cost_on,
     )
     benchmarks.append(("equal_weight_monthly", performance(equal_rows, total_cost_gbp=equal_cost, total_turnover=equal_turnover)))
     return benchmarks

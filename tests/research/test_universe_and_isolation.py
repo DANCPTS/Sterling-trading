@@ -117,7 +117,7 @@ def test_running_research_does_not_call_the_broker(monkeypatch: pytest.MonkeyPat
 
 def test_research_limits_stay_proposed_and_are_not_the_operational_file() -> None:
     limits = load_research_limits()
-    assert limits.status == "PROPOSED - pending owner approval"
+    assert limits.status == "APPROVED FOR RESEARCH SIMULATION ONLY by owner 2026-11-09; not operational"
     assert limits.owner_approved is False
     assert limits.max_gross == Decimal("1")
     assert limits.max_single_instrument_weight == Decimal("0.50")
@@ -130,7 +130,7 @@ def test_research_limits_stay_proposed_and_are_not_the_operational_file() -> Non
     with pytest.raises(ResearchError, match="owner-approved"):
         parse_research_limits(
             {
-                "status": "PROPOSED - pending owner approval",
+                "status": "APPROVED FOR RESEARCH SIMULATION ONLY by owner 2026-11-09; not operational",
                 "owner_approved": True,
                 "constraints": {},
                 "account": {},

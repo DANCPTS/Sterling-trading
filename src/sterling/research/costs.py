@@ -1,15 +1,20 @@
 """Simulated dealing costs.
 
-Spread and slippage move the fill off the open. They are not charged again on
-top of that fill. Commission, UK share stamp, and an explicit FX conversion
-cost are extra cash items. Stamp is 0.5% on buys of non-exempt shares and zero
-on sells. ETF and ETC lines are exempt in this research model; that is not tax
-advice.
+``research_cost_model`` is the long-history schedule. The numbers were chosen
+before that sample was run: 10 bps spread and 5 bps slippage from 2010, 25 bps
+spread and 10 bps slippage before 2010, and an extra 15 bps of slippage inside
+fixed stress windows (Mar 2000–Mar 2003, Oct 2007–Mar 2009, 20 Feb–23 Mar 2020,
+and calendar 2022). Commission is zero. Stamp stays available at 0.5% and is
+applied only when the instrument is not exempt. Spread and slippage move the
+fill off the open and are not charged again. Stamp is 0.5% on buys of
+non-exempt shares and zero on sells. ETF and ETC lines are exempt here; that
+is not tax advice.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from decimal import ROUND_UP, Decimal
 
 from sterling.research.errors import ResearchError
@@ -24,6 +29,34 @@ class CostModel:
     slippage_bps: Decimal = Decimal("0")
     fx_conversion_bps: Decimal = Decimal("0")
     stamp_duty_rate: Decimal = Decimal("0.005")
+
+
+# Fixed before the long-history run. Not chosen from those results.
+_EARLY_COST_END = date(2010, 1, 1)
+_CRISIS_WINDOWS = (
+    (date(2000, 3, 1), date(2003, 3, 31)),
+    (date(2007, 10, 1), date(2009, 3, 31)),
+    (date(2020, 2, 20), date(2020, 3, 23)),
+    (date(2022, 1, 1), date(2022, 12, 31)),
+)
+
+
+def research_cost_model(day: date) -> CostModel:
+    """Date-dependent research cost assumption. Not a measured spread."""
+    early = day < _EARLY_COST_END
+    crisis = any(start <= day <= end for start, end in _CRISIS_WINDOWS)
+    spread = Decimal("25") if early else Decimal("10")
+    slippage = Decimal("10") if early else Decimal("5")
+    if crisis:
+        slippage += Decimal("15")
+    return CostModel(
+        commission_flat_gbp=Decimal("0"),
+        commission_bps=Decimal("0"),
+        spread_bps=spread,
+        slippage_bps=slippage,
+        fx_conversion_bps=Decimal("0"),
+        stamp_duty_rate=Decimal("0.005"),
+    )
 
 
 @dataclass(frozen=True, slots=True)

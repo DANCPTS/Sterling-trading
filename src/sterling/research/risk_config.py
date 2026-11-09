@@ -1,8 +1,8 @@
 """Load the research-only risk file.
 
-The status string must stay ``PROPOSED - pending owner approval``. An
-``owner_approved`` flag of true is refused, as is any attempt to pass Desk
-Rules or the Stage 2 policy through this loader.
+The status string is the research-simulation approval. ``owner_approved``
+stays false: these limits are not Desk Rules and not the Stage 2 policy.
+Loading an operational version id, or setting ``owner_approved`` true, is refused.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from sterling.research.errors import ResearchError
 from sterling.research.instruments import OPERATIONAL_VERSION_IDS
 from sterling.research.money import parse_decimal
 
-PROPOSED_STATUS = "PROPOSED - pending owner approval"
+RESEARCH_STATUS = "APPROVED FOR RESEARCH SIMULATION ONLY by owner 2026-11-09; not operational"
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,8 +70,8 @@ def parse_research_limits(document: dict[str, object]) -> ResearchLimits:
     version_id = document.get("version_id")
     if version_id in OPERATIONAL_VERSION_IDS or document.get("gate") == "stage2-gate1":
         raise ResearchError("refusing to load operational risk configuration as research limits")
-    if document.get("status") != PROPOSED_STATUS:
-        raise ResearchError(f"research limits status must be {PROPOSED_STATUS!r}")
+    if document.get("status") != RESEARCH_STATUS:
+        raise ResearchError(f"research limits status must be {RESEARCH_STATUS!r}")
     if document.get("owner_approved") is not False:
         raise ResearchError("research limits are not owner-approved; refusing owner_approved true")
     constraints = _object(document.get("constraints"), "constraints")
@@ -85,7 +85,7 @@ def parse_research_limits(document: dict[str, object]) -> ResearchLimits:
     if not isinstance(exempt_raw, list) or not all(isinstance(item, str) for item in exempt_raw):
         raise ResearchError("single_instrument_cap_exempt_asset_classes must be a list of strings")
     limits = ResearchLimits(
-        status=PROPOSED_STATUS,
+        status=RESEARCH_STATUS,
         owner_approved=False,
         long_only=constraints.get("long_only") is True and constraints.get("shorts") is False,
         max_gross=parse_decimal(constraints.get("max_gross_exposure"), label="max_gross_exposure"),

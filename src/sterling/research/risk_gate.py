@@ -49,6 +49,7 @@ def apply_risk_gate(
     limits: ResearchLimits,
     asset_class_by_ticker: Mapping[str, str],
     nav_gbp: Decimal,
+    no_trade_band: Decimal = ZERO,
 ) -> GateResult:
     if nav_gbp <= 0:
         raise ResearchError("risk gate requires a positive NAV")
@@ -104,6 +105,20 @@ def apply_risk_gate(
         reasons.append(f"clipped gross from {format(gross, 'f')} to {format(limits.max_gross, 'f')}")
 
     weights = _pack(weights)
+    if no_trade_band > 0:
+        for ticker in sorted(set(weights) | set(current_book)):
+            new = weights.get(ticker, ZERO)
+            old = current_book.get(ticker, ZERO)
+            if new != old and abs(new - old) < no_trade_band:
+                if old == 0:
+                    weights.pop(ticker, None)
+                else:
+                    weights[ticker] = old
+                clipped = True
+                reasons.append(
+                    f"no_trade_band kept {ticker} at {format(old, 'f')}; "
+                    f"move {format(abs(new - old), 'f')} is inside {format(no_trade_band, 'f')}"
+                )
     for ticker in sorted(set(weights) | set(current_book)):
         new = weights.get(ticker, ZERO)
         old = current_book.get(ticker, ZERO)

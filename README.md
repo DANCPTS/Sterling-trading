@@ -112,7 +112,8 @@ IGLT, AGBP, SGLN, and XSTR. CSP1 and ERNS are optional comparisons only.
 SGLN is a physically backed gold ETC, not a UCITS fund. XSTR is a synthetic
 swap-based UCITS ETF. VWRP, CUKX, and IGLT are physical UCITS ETFs. AGBP is a
 physical UCITS ETF with a GBP hedge that uses derivatives.
-Research risk limits are marked `PROPOSED - pending owner approval`.
+Research limits are `APPROVED FOR RESEARCH SIMULATION ONLY by owner 2026-11-09; not operational`.
+`owner_approved` stays false so they cannot be read as Desk Rules.
 The cash-proxy class, used for XSTR, may be held up to 100%. It is still an
 investment, with its own costs and swap risk, not literal cash. A rebalance
 that only reduces equity, bond, or gold weights into XSTR or literal cash is
