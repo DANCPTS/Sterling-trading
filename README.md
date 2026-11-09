@@ -113,10 +113,15 @@ SGLN is a physically backed gold ETC, not a UCITS fund. XSTR is a synthetic
 swap-based UCITS ETF. VWRP, CUKX, and IGLT are physical UCITS ETFs. AGBP is a
 physical UCITS ETF with a GBP hedge that uses derivatives.
 Research risk limits are marked `PROPOSED - pending owner approval`.
+The cash-proxy class, used for XSTR, may be held up to 100%. It is still an
+investment, with its own costs and swap risk, not literal cash. A rebalance
+that only reduces equity, bond, or gold weights into XSTR or literal cash is
+not scaled by the 50% one-way turnover cap. A buy that increases those
+weights stays capped.
 
-Signals use the month-end close. Fills use the next session open on
-`XLON_WEEKDAY`, which is a Monday-to-Friday placeholder, not the official LSE
-holiday calendar. Costs can include commission, half the bid-ask spread,
+Signals use the month-end close. Fills use the next XLON session open.
+XLON is weekdays minus England and Wales bank holidays, including Easter and
+the proclaimed one-offs checked against GOV.UK. Costs can include commission, half the bid-ask spread,
 slippage, a 0.5% stamp flag on non-exempt UK shares, and an FX conversion cost.
 ETF and ETC lines in the draft universe are stamp-exempt in this model. That
 is not tax advice. GBP-traded lines are not FX-converted again; pence quotes

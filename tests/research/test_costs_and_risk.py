@@ -197,5 +197,44 @@ def test_execution_refuses_leverage_and_reinvests_a_distribution_once() -> None:
     assert holding.cash == Decimal("0.00")
 
 
+def test_cash_proxy_can_be_fully_invested_and_a_risk_off_exit_is_not_scaled() -> None:
+    limits = _limits(
+        max_single_instrument_weight=Decimal("0.50"),
+        max_asset_class_weight=(("equity", Decimal("0.80")), ("commodity", Decimal("0.20")), ("cash_proxy", Decimal("1"))),
+        max_one_way_turnover=Decimal("0.50"),
+        single_instrument_cap_exempt_asset_classes=("cash_proxy",),
+        risk_off_turnover_exception=True,
+    )
+    classes = {"AAA": "equity", "GOLD": "commodity", "XSTR": "cash_proxy"}
+    parked = apply_risk_gate({"XSTR": Decimal("1")}, {}, limits, classes, Decimal("10000"))
+    assert parked.veto is False
+    assert parked.weight_map() == {"XSTR": Decimal("1")}
+    assert parked.cash_weight == 0
+    exit_book = apply_risk_gate(
+        {"XSTR": Decimal("1")},
+        {"AAA": Decimal("0.60"), "GOLD": Decimal("0.20")},
+        limits,
+        classes,
+        Decimal("10000"),
+    )
+    assert exit_book.weight_map() == {"XSTR": Decimal("1")}
+    assert any("risk_off_turnover_exception" in reason for reason in exit_book.reasons)
+    uncapped = _limits(
+        max_single_instrument_weight=Decimal("1"),
+        max_one_way_turnover=Decimal("0.50"),
+        risk_off_turnover_exception=True,
+    )
+    rotated = apply_risk_gate(
+        {"BBB": Decimal("1")},
+        {"AAA": Decimal("1")},
+        uncapped,
+        {"AAA": "equity", "BBB": "equity"},
+        Decimal("10000"),
+    )
+    assert rotated.weight_map()["AAA"] == Decimal("0.5")
+    assert rotated.weight_map()["BBB"] == Decimal("0.5")
+    assert any(reason.startswith("scaled turnover") for reason in rotated.reasons)
+
+
 def test_gross_index_drag_is_not_the_exchange_price_path() -> None:
     assert gross_index_fee_drag(Decimal("36525.00"), Decimal("0.01")) == Decimal("1.00")

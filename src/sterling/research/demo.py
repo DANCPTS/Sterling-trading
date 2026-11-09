@@ -6,7 +6,7 @@ import argparse
 from decimal import Decimal
 from pathlib import Path
 
-from sterling.research.calendar import xlon_weekday
+from sterling.research.calendar import xlon
 from sterling.research.costs import CostModel
 from sterling.research.engine import simulate
 from sterling.research.instruments import load_candidate_universe
@@ -56,7 +56,7 @@ def run_csv(directory: Path, tickers: list[str], output: Path | None) -> None:
     result = simulate(
         instruments=instruments,
         bars=bars,
-        calendar=xlon_weekday(),
+        calendar=xlon(),
         strategy=TrendFilter(lookback_months=10),
         limits=limits,
         cost_model=CostModel(commission_flat_gbp=Decimal("1.00"), spread_bps=Decimal("10"), slippage_bps=Decimal("5")),
@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> None:
         + ", ".join(universe.optional_comparison_only)
         + "."
     )
-    print("Calendar is XLON_WEEKDAY, not the official LSE holiday calendar.")
+    print("Calendar is XLON: England and Wales bank holidays, including Easter and proclaimed one-offs.")
     print()
     print(format_report(result, limit_lines=limits.summary_lines()))
     _print_splits()

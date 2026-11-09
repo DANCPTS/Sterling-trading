@@ -6,15 +6,15 @@ from datetime import date
 from decimal import Decimal
 
 from sterling.research.bars import Bar
-from sterling.research.calendar import WeekdayCalendar, xlon_weekday
+from sterling.research.calendar import WeekdayCalendar, xlon
 from sterling.research.costs import CostModel
 from sterling.research.engine import SimulationResult, simulate
 from sterling.research.instruments import Instrument
 from sterling.research.risk_config import ResearchLimits, load_research_limits
 from sterling.research.strategies.trend import TrendFilter
 
-# Weekday calendar only. 2024-04-01 is a Monday here. The real LSE was closed
-# that day for Easter. This illustration does not claim exchange sessions.
+# Uses the LSE session calendar. 1 Apr 2024 is Easter Monday and is not a
+# session, so a March month-end signal fills on 2 Apr 2024.
 ILLUSTRATION_START = date(2023, 10, 2)
 ILLUSTRATION_END = date(2024, 5, 31)
 
@@ -39,7 +39,7 @@ def illustration_instruments() -> tuple[Instrument, Instrument]:
         trading_currency="GBP",
         stamp_duty_exempt=True,
         distribution="accumulating",
-        calendar_id="XLON_WEEKDAY",
+        calendar_id="XLON",
         isin=None,
     )
     bond = Instrument(
@@ -50,7 +50,7 @@ def illustration_instruments() -> tuple[Instrument, Instrument]:
         trading_currency="GBP",
         stamp_duty_exempt=True,
         distribution="accumulating",
-        calendar_id="XLON_WEEKDAY",
+        calendar_id="XLON",
         isin=None,
     )
     return equity, bond
@@ -75,7 +75,7 @@ def level_bars(
     calendar: WeekdayCalendar | None = None,
     quoted_in: str = "GBP",
 ) -> tuple[Bar, ...]:
-    sessions = (calendar or xlon_weekday()).trading_days(start, end)
+    sessions = (calendar or xlon()).trading_days(start, end)
     bars: list[Bar] = []
     for session in sessions:
         level = levels[(session.year, session.month)]
@@ -123,7 +123,7 @@ def run_illustration(
     return simulate(
         instruments=(equity, bond),
         bars=illustration_bars(),
-        calendar=xlon_weekday(),
+        calendar=xlon(),
         strategy=TrendFilter(lookback_months=3),
         limits=active_limits,
         cost_model=illustration_costs(),

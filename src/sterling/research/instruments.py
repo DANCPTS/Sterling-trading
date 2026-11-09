@@ -78,7 +78,7 @@ class Candidate:
             trading_currency="GBP",
             stamp_duty_exempt=True,
             distribution=self.distribution,
-            calendar_id="XLON_WEEKDAY",
+            calendar_id="XLON",
             isin=self.isin,
         )
 

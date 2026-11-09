@@ -22,7 +22,7 @@ from sterling.research.errors import DataValidationError, ResearchError
 from sterling.research.instruments import Instrument
 from sterling.research.isolation import EXECUTION_PERMISSION, ORDERS_SUBMITTED, RESEARCH_MODE, assert_not_on_execution_path
 from sterling.research.metrics import NavRow, Performance, performance
-from sterling.research.money import ZERO, ZERO_MONEY, quantize_money, quantize_qty_down
+from sterling.research.money import ZERO, ZERO_MONEY, quantize_money, quantize_qty_down, quantize_weight_down
 from sterling.research.proposal import RulesProposalSource
 from sterling.research.risk_config import ResearchLimits
 from sterling.research.risk_gate import apply_risk_gate
@@ -274,6 +274,7 @@ def _run_path(
     strategy: Strategy | None,
     static_weights: Mapping[str, Decimal] | None,
     apply_gate: bool,
+    monthly_rebalance: bool = False,
 ) -> tuple[tuple[NavRow, ...], tuple[Fill, ...], tuple[dict[str, object], ...], tuple[dict[str, object], ...], Decimal, Decimal]:
     sessions = tuple(prepared[next(iter(prepared))].bars)
     session_days = tuple(bar.session for bar in sessions)
@@ -328,8 +329,13 @@ def _run_path(
                     nav_gbp=quantize_money(nav),
                     gross_exposure=gross,
                     cash_weight=book.cash / nav,
+                    holdings=tuple(sorted(weights_now.items())),
                 )
             )
+        if monthly_rebalance and static_weights is not None and day in month_ends:
+            nxt_rebalance = calendar.next_trading_day(day)
+            if evaluate_start <= nxt_rebalance <= evaluate_end:
+                pending = (nxt_rebalance, dict(static_weights), day)
         if source is not None and day in month_ends:
             view = build_view(prepared, day)
             proposal = source.propose(
@@ -395,6 +401,7 @@ def simulate(
     evaluate_end: date | None = None,
     label: str = "research illustration",
     deduct_ocf: bool = False,
+    include_benchmarks: bool = True,
     fx_gbp_per_unit: Mapping[date, Decimal] | None = None,
     return_method: str = "auto",
 ) -> SimulationResult:
@@ -447,6 +454,52 @@ def simulate(
         apply_gate=True,
     )
     benchmarks: list[tuple[str, Performance]] = []
+    if include_benchmarks:
+        benchmarks.extend(
+            _benchmarks(
+                prepared=prepared,
+                instruments=instruments,
+                by_ticker=by_ticker,
+                calendar=calendar,
+                model=model,
+                limits=limits,
+                starting=starting,
+                start_eval=start_eval,
+                end_eval=end_eval,
+            )
+        )
+    metrics = performance(rows, total_cost_gbp=total_cost, total_turnover=turnover)
+    return SimulationResult(
+        mode=RESEARCH_MODE,
+        execution_permission=EXECUTION_PERMISSION,
+        orders_submitted=ORDERS_SUBMITTED,
+        label=label,
+        nav=rows,
+        fills=fills,
+        proposals=proposals,
+        decisions=decisions,
+        metrics=metrics,
+        benchmarks=tuple(benchmarks),
+        caveats=tuple(dict.fromkeys(caveats)),
+        ocf_deducted_gbp=ZERO_MONEY,
+        total_cost_gbp=total_cost,
+        total_turnover=turnover,
+    )
+
+
+def _benchmarks(
+    *,
+    prepared: Mapping[str, PreparedSeries],
+    instruments: Sequence[Instrument],
+    by_ticker: Mapping[str, Instrument],
+    calendar: WeekdayCalendar,
+    model: CostModel,
+    limits: ResearchLimits,
+    starting: Decimal,
+    start_eval: date,
+    end_eval: date,
+) -> list[tuple[str, Performance]]:
+    benchmarks: list[tuple[str, Performance]] = []
     for instrument in instruments:
         static = {instrument.ticker: Decimal(1)}
         bench_rows, bench_fills, _p, _d, bench_cost, bench_turnover = _run_path(
@@ -471,7 +524,7 @@ def simulate(
             )
         )
     count = Decimal(len(instruments))
-    each = (Decimal(1) / count).quantize(Decimal("0.00000001"))
+    each = quantize_weight_down(Decimal(1) / count)
     equal = {instrument.ticker: each for instrument in instruments}
     equal_rows, _fills, _p, _d, equal_cost, equal_turnover = _run_path(
         prepared=prepared,
@@ -486,22 +539,7 @@ def simulate(
         strategy=None,
         static_weights=equal,
         apply_gate=False,
+        monthly_rebalance=True,
     )
-    benchmarks.append(("equal_weight_static", performance(equal_rows, total_cost_gbp=equal_cost, total_turnover=equal_turnover)))
-    metrics = performance(rows, total_cost_gbp=total_cost, total_turnover=turnover)
-    return SimulationResult(
-        mode=RESEARCH_MODE,
-        execution_permission=EXECUTION_PERMISSION,
-        orders_submitted=ORDERS_SUBMITTED,
-        label=label,
-        nav=rows,
-        fills=fills,
-        proposals=proposals,
-        decisions=decisions,
-        metrics=metrics,
-        benchmarks=tuple(benchmarks),
-        caveats=tuple(dict.fromkeys(caveats)),
-        ocf_deducted_gbp=ZERO_MONEY,
-        total_cost_gbp=total_cost,
-        total_turnover=turnover,
-    )
+    benchmarks.append(("equal_weight_monthly", performance(equal_rows, total_cost_gbp=equal_cost, total_turnover=equal_turnover)))
+    return benchmarks

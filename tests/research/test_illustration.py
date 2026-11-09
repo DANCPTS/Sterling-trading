@@ -8,7 +8,7 @@ from decimal import Decimal
 import pytest
 
 from sterling.research.bars import Bar
-from sterling.research.calendar import xlon_weekday
+from sterling.research.calendar import xlon
 from sterling.research.engine import build_view, simulate
 from sterling.research.errors import ResearchError
 from sterling.research.report import write_report
@@ -29,8 +29,8 @@ def test_illustration_buys_then_sells_with_costs_and_benchmarks(tmp_path: object
     assert buys[0].signal_date == date(2024, 1, 31)
     assert buys[0].session == date(2024, 2, 1)
     assert buys[0].mid_price_gbp == Decimal("130")
-    assert sells[0].signal_date == date(2024, 3, 29)
-    assert sells[0].session == date(2024, 4, 1)
+    assert sells[0].signal_date == date(2024, 3, 28)
+    assert sells[0].session == date(2024, 4, 2)
     assert sells[0].mid_price_gbp == Decimal("80")
     assert buys[0].session != buys[0].signal_date
     assert all(fill.stamp_duty_gbp == 0 for fill in result.fills)
@@ -46,7 +46,7 @@ def test_illustration_buys_then_sells_with_costs_and_benchmarks(tmp_path: object
     assert january["data_cutoff"] == "2024-01-31"
     assert "max single instrument" in " ".join(january["reasons"])  # type: ignore[arg-type]
     names = [name for name, _metrics in result.benchmarks]
-    assert names == ["buy_and_hold:SYNTH-EQ", "buy_and_hold:SYNTH-BOND", "equal_weight_static"]
+    assert names == ["buy_and_hold:SYNTH-EQ", "buy_and_hold:SYNTH-BOND", "equal_weight_monthly"]
     strategy_end = result.metrics.end_nav_gbp
     equity_end = result.benchmarks[0][1].end_nav_gbp
     assert strategy_end != equity_end
@@ -80,7 +80,7 @@ def test_fill_uses_the_next_open_not_the_signal_close() -> None:
     result = simulate(
         instruments=(equity, bond),
         bars=bars,
-        calendar=xlon_weekday(),
+        calendar=xlon(),
         strategy=TrendFilter(lookback_months=3),
         limits=load_research_limits(),
         cost_model=illustration_costs(),
@@ -103,14 +103,14 @@ def test_future_prices_do_not_change_the_signal_and_a_leaked_close_would() -> No
             distribution=equity.distribution,
             trading_currency="GBP",
             bars=raw[equity.ticker],
-            calendar=xlon_weekday(),
+            calendar=xlon(),
         ),
         bond.ticker: prepare_series(
             ticker=bond.ticker,
             distribution=bond.distribution,
             trading_currency="GBP",
             bars=raw[bond.ticker],
-            calendar=xlon_weekday(),
+            calendar=xlon(),
         ),
     }
     view = build_view(prepared, date(2024, 1, 31))
@@ -145,7 +145,7 @@ def test_future_prices_do_not_change_the_signal_and_a_leaked_close_would() -> No
     changed = simulate(
         instruments=(equity, bond),
         bars={"SYNTH-EQ": tuple(mutated), "SYNTH-BOND": raw["SYNTH-BOND"]},
-        calendar=xlon_weekday(),
+        calendar=xlon(),
         strategy=TrendFilter(lookback_months=3),
         limits=load_research_limits(),
         cost_model=illustration_costs(),
@@ -162,7 +162,7 @@ def test_deducting_ocf_from_exchange_prices_is_refused() -> None:
         simulate(
             instruments=(equity, bond),
             bars=illustration_bars(),
-            calendar=xlon_weekday(),
+            calendar=xlon(),
             strategy=TrendFilter(lookback_months=3),
             limits=load_research_limits(),
             deduct_ocf=True,

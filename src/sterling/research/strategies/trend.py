@@ -2,8 +2,9 @@
 
 At a month-end signal, an instrument is eligible when its close is strictly
 above the average of the last ``lookback_months`` month-end closes, including
-the signal month. Eligible names are equal-weighted. Otherwise the target is
-100% cash. History that does not cover the lookback stays in cash.
+the signal month. Eligible names are equal-weighted. With no ``defensive``
+ticker the residual, including a fully ineligible book, is literal cash.
+With ``defensive`` set, that residual is the named cash-proxy investment.
 """
 
 from __future__ import annotations
@@ -13,12 +14,13 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from sterling.research.money import ZERO
-from sterling.research.strategy import MarketView, equal_weights, month_end_levels
+from sterling.research.strategy import MarketView, allocate_with_defensive, month_end_levels
 
 
 @dataclass(frozen=True, slots=True)
 class TrendFilter:
     lookback_months: int = 10
+    defensive: str | None = None
     strategy_id: str = "trend_filter"
 
     def __post_init__(self) -> None:
@@ -38,4 +40,4 @@ class TrendFilter:
             average = sum((level for _day, level in window), ZERO) / Decimal(len(window))
             if price > average:
                 eligible.append(ticker)
-        return equal_weights(eligible)
+        return allocate_with_defensive(eligible, self.defensive)

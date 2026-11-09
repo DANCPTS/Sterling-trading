@@ -34,6 +34,8 @@ class ResearchLimits:
     rebalance: str
     starting_nav_gbp: Decimal
     notes: tuple[str, ...]
+    single_instrument_cap_exempt_asset_classes: tuple[str, ...] = ()
+    risk_off_turnover_exception: bool = True
 
     def asset_cap(self, asset_class: str) -> Decimal:
         for name, cap in self.max_asset_class_weight:
@@ -48,9 +50,11 @@ class ResearchLimits:
             f"owner_approved: {self.owner_approved}",
             "long_only: true; gross exposure <= 1; cash weight 0 to 1",
             f"max single instrument: {format(self.max_single_instrument_weight, 'f')}",
+            "single-name cap exempt asset classes: " + ", ".join(self.single_instrument_cap_exempt_asset_classes),
             f"max asset class: {classes}",
             f"min trade notional GBP: {format(self.min_trade_notional_gbp, 'f')}",
             f"max one-way turnover: {format(self.max_one_way_turnover, 'f')}",
+            f"risk-off turnover exception: {self.risk_off_turnover_exception}",
             f"rebalance: {self.rebalance}",
             f"research starting NAV GBP: {format(self.starting_nav_gbp, 'f')}",
         )
@@ -77,6 +81,9 @@ def parse_research_limits(document: dict[str, object]) -> ResearchLimits:
     notes_raw = constraints.get("notes", [])
     if not isinstance(notes_raw, list):
         raise ResearchError("notes must be a list")
+    exempt_raw = constraints.get("single_instrument_cap_exempt_asset_classes", [])
+    if not isinstance(exempt_raw, list) or not all(isinstance(item, str) for item in exempt_raw):
+        raise ResearchError("single_instrument_cap_exempt_asset_classes must be a list of strings")
     limits = ResearchLimits(
         status=PROPOSED_STATUS,
         owner_approved=False,
@@ -93,6 +100,8 @@ def parse_research_limits(document: dict[str, object]) -> ResearchLimits:
         rebalance=str(constraints.get("rebalance")),
         starting_nav_gbp=parse_decimal(account.get("research_starting_nav_gbp"), label="research_starting_nav_gbp"),
         notes=tuple(str(item) for item in notes_raw),
+        single_instrument_cap_exempt_asset_classes=tuple(str(item) for item in exempt_raw),
+        risk_off_turnover_exception=constraints.get("risk_off_turnover_exception") is not False,
     )
     if not limits.long_only or limits.max_gross > 1 or limits.cash_min < 0 or limits.cash_max > 1:
         raise ResearchError("research limits must stay long-only with gross and cash inside 0 to 1")

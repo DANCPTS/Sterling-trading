@@ -61,6 +61,22 @@ def equal_weights(instrument_ids: Sequence[str]) -> dict[str, Decimal]:
     return {ticker: weight for ticker in instrument_ids}
 
 
+def allocate_with_defensive(active: Sequence[str], defensive: str | None) -> dict[str, Decimal]:
+    """Equal-weight ``active`` names. Any residual, including 100%, goes to ``defensive``.
+
+    The defensive name is an investment, not literal cash. It can also appear
+    in ``active`` when it independently qualifies.
+    """
+    weights = equal_weights(tuple(dict.fromkeys(active)))
+    if defensive is None:
+        return weights
+    invested = sum(weights.values(), ZERO)
+    residual = Decimal(1) - invested
+    if residual > 0:
+        weights[defensive] = weights.get(defensive, ZERO) + residual
+    return weights
+
+
 def residual_cash(weights: Mapping[str, Decimal]) -> Decimal:
     invested = sum(weights.values(), ZERO)
     return Decimal(1) - invested

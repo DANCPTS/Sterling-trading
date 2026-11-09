@@ -62,18 +62,23 @@ def apply_risk_gate(
         reasons.append("veto: unknown instrument " + ", ".join(sorted(unknown)))
         return _veto(current_book, tuple(reasons))
 
+    exempt = set(limits.single_instrument_cap_exempt_asset_classes)
     weights: dict[str, Decimal] = {}
     clipped = False
     for ticker, weight in proposal.items():
         if weight == 0:
             continue
-        if weight > limits.max_single_instrument_weight:
-            weights[ticker] = limits.max_single_instrument_weight
+        asset_class = asset_class_by_ticker[ticker]
+        if asset_class in exempt:
+            ceiling = min(limits.max_gross, limits.asset_cap(asset_class))
+            rule = f"{asset_class} class cap"
+        else:
+            ceiling = limits.max_single_instrument_weight
+            rule = "max single instrument"
+        if weight > ceiling:
+            weights[ticker] = ceiling
             clipped = True
-            reasons.append(
-                f"clipped {ticker} from {format(weight, 'f')} to {format(limits.max_single_instrument_weight, 'f')} "
-                "(max single instrument)"
-            )
+            reasons.append(f"clipped {ticker} from {format(weight, 'f')} to {format(ceiling, 'f')} ({rule})")
         else:
             weights[ticker] = weight
 
@@ -111,7 +116,13 @@ def apply_risk_gate(
             reasons.append(f"skipped {ticker}; change is below the min trade of {format(limits.min_trade_notional_gbp, 'f')}")
 
     turnover = _one_way(weights, current_book)
-    if turnover > limits.max_one_way_turnover and turnover > 0:
+    risk_off = _risk_off_rebalance(weights, current_book, asset_class_by_ticker)
+    if limits.risk_off_turnover_exception and risk_off and turnover > limits.max_one_way_turnover and turnover > 0:
+        reasons.append(
+            "risk_off_turnover_exception: every non-cash-proxy weight is unchanged or lower, "
+            "so the one-way turnover cap does not scale this rebalance"
+        )
+    elif turnover > limits.max_one_way_turnover and turnover > 0:
         scale = limits.max_one_way_turnover / turnover
         blended: dict[str, Decimal] = {}
         for ticker in set(weights) | set(current_book):
@@ -137,6 +148,26 @@ def apply_risk_gate(
         cash_weight=cash,
         reasons=tuple(reasons),
     )
+
+
+def _risk_off_rebalance(
+    proposed: Mapping[str, Decimal],
+    current: Mapping[str, Decimal],
+    asset_class_by_ticker: Mapping[str, str],
+) -> bool:
+    """True when no risky sleeve increases.
+
+    Cash-proxy weights and literal cash may rise. Equity, bond, commodity, and
+    any other non-cash-proxy weight must be unchanged or lower. A buy of a
+    risky sleeve makes the whole rebalance subject to the turnover cap.
+    """
+    tolerance = Decimal("0.00000001")
+    for ticker in set(proposed) | set(current):
+        if asset_class_by_ticker.get(ticker) == "cash_proxy":
+            continue
+        if proposed.get(ticker, ZERO) > current.get(ticker, ZERO) + tolerance:
+            return False
+    return True
 
 
 def _veto(current: Mapping[str, Decimal], reasons: tuple[str, ...]) -> GateResult:

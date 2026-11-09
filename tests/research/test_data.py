@@ -87,6 +87,21 @@ def test_gbp_traded_line_is_not_fx_converted_again() -> None:
         )
 
 
+def test_close_outside_the_vendor_range_is_kept_and_the_range_is_widened() -> None:
+    day = date(2024, 1, 2)
+    prepared = prepare_series(
+        ticker="VWRP",
+        distribution="accumulating",
+        trading_currency="GBP",
+        bars=[_bar(day, "64.64", open=Decimal("64.51"), high=Decimal("64.51"), low=Decimal("64.51"))],
+        calendar=xlon_weekday(),
+    )
+    assert prepared.bars[0].close == Decimal("64.64")
+    assert prepared.bars[0].open == Decimal("64.51")
+    assert prepared.bars[0].high == Decimal("64.64")
+    assert any("expanded" in note for note in prepared.caveats)
+
+
 def test_rejects_bad_prices_duplicates_weekends_and_gaps() -> None:
     calendar = xlon_weekday()
     monday = date(2024, 1, 8)
@@ -122,14 +137,6 @@ def test_rejects_bad_prices_duplicates_weekends_and_gaps() -> None:
             distribution="accumulating",
             trading_currency="GBP",
             bars=[_bar(monday, "10"), _bar(wednesday, "10")],
-            calendar=calendar,
-        )
-    with pytest.raises(DataValidationError, match="low"):
-        prepare_series(
-            ticker="A",
-            distribution="accumulating",
-            trading_currency="GBP",
-            bars=[_bar(monday, "10", low=Decimal("11"))],
             calendar=calendar,
         )
     assert tuesday.isoformat()
@@ -187,6 +194,20 @@ def test_distributing_without_income_is_price_only() -> None:
     )
     assert prepared.return_basis == "price_only"
     assert any("price-only" in note for note in prepared.caveats)
+
+
+def test_flat_adjusted_close_does_not_suppress_a_real_dividend() -> None:
+    day = date(2024, 1, 2)
+    prepared = prepare_series(
+        ticker="XSTR",
+        distribution="distributing",
+        trading_currency="GBP",
+        bars=[_bar(day, "181.31", adjusted_close=Decimal("181.31"), dividend=Decimal("3.57"))],
+        calendar=xlon_weekday(),
+    )
+    assert prepared.return_basis == "distributions"
+    assert prepared.dividend_mode == "reinvest"
+    assert prepared.bars[0].dividend == Decimal("3.57")
 
 
 def test_explicit_distribution_mode_keeps_the_dividend() -> None:

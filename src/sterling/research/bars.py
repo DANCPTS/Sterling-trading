@@ -94,6 +94,27 @@ def _require_positive(value: Decimal, label: str) -> None:
         raise DataValidationError(f"{label} must be positive")
 
 
+def _enclose_open_close(bar: Bar) -> tuple[Bar, bool]:
+    high = max(bar.high, bar.open, bar.close)
+    low = min(bar.low, bar.open, bar.close)
+    if high == bar.high and low == bar.low:
+        return bar, False
+    return (
+        Bar(
+            session=bar.session,
+            open=bar.open,
+            high=high,
+            low=low,
+            close=bar.close,
+            volume=bar.volume,
+            adjusted_close=bar.adjusted_close,
+            dividend=bar.dividend,
+            quoted_in=bar.quoted_in,
+        ),
+        True,
+    )
+
+
 def validate_bar_shape(bar: Bar) -> None:
     _require_positive(bar.open, f"{bar.session.isoformat()} open")
     _require_positive(bar.high, f"{bar.session.isoformat()} high")
@@ -168,6 +189,7 @@ def prepare_series(
     if trading_currency != "GBP":
         raise ResearchError(f"{ticker} trades in {trading_currency}. This milestone prepares GBP-traded lines only.")
     scaled: list[Bar] = []
+    range_repairs = 0
     for bar in bars:
         major, _divisor = quote_scale(bar.quoted_in)
         if major != "GBP":
@@ -175,11 +197,17 @@ def prepare_series(
                 f"{ticker} is GBP-traded. A {major} price would convert underlying FX a second time. "
                 "Supply the sterling line and normalise pence to pounds instead."
             )
-        converted = _scale_bar(bar, major)
+        converted, repaired = _enclose_open_close(_scale_bar(bar, major))
+        range_repairs += int(repaired)
         validate_bar_shape(converted)
         scaled.append(converted)
     ordered = validate_sessions(tuple(scaled), calendar)
     caveats: list[str] = []
+    if range_repairs:
+        caveats.append(
+            f"{ticker} high/low was expanded to include the open and close on {range_repairs} sessions. "
+            "The vendor range did not contain those prints. Signals still use the close and fills still use the open."
+        )
     if fx_gbp_per_unit is not None:
         caveats.append(f"{ticker} is GBP-traded. The supplied FX map was ignored so the sterling price is not converted twice.")
     return _apply_total_return(ticker, distribution, ordered, return_method, tuple(caveats))
@@ -219,48 +247,58 @@ def _apply_total_return(
             ratios.append(bar.adjusted_close / bar.close)
         median = _median(ratios)
         commensurate = Decimal("0.2") <= median <= Decimal("5")
-        if not commensurate:
-            index_signal = True
+        # A series whose adjusted close never leaves the raw close is not a
+        # total-return adjustment. Yahoo does this for some distributing LSE
+        # lines, including XSTR. Reinvest the dividend column instead.
+        adjustment_is_material = any(abs(ratio - 1) > Decimal("0.005") for ratio in ratios)
+        if has_dividend and not adjustment_is_material and return_method == "auto":
             notes.append(
-                f"{ticker} adjusted close is not on the traded-price scale, so fills stay on the raw open "
-                "and the signal uses the index level."
+                f"{ticker} adjusted close stays within 0.5% of the raw close, so it is not used as a "
+                "total-return series. Explicit distributions are reinvested instead."
             )
         else:
-            notes.append(f"{ticker} uses adjusted OHLC for signals and fills. Dividends are not also reinvested.")
-        if has_dividend:
-            notes.append(f"{ticker} dividend column was ignored to avoid double-counting adjusted close.")
-        prepared = []
-        for bar in bars:
-            assert bar.adjusted_close is not None
-            if commensurate:
-                ratio = bar.adjusted_close / bar.close
-                prepared.append(
-                    GbpBar(
-                        session=bar.session,
-                        open=bar.open * ratio,
-                        high=bar.high * ratio,
-                        low=bar.low * ratio,
-                        close=bar.adjusted_close,
-                        signal_close=bar.adjusted_close,
-                        volume=bar.volume,
-                        dividend=ZERO,
-                    )
+            if not commensurate:
+                index_signal = True
+                notes.append(
+                    f"{ticker} adjusted close is not on the traded-price scale, so fills stay on the raw open "
+                    "and the signal uses the index level."
                 )
             else:
-                prepared.append(
-                    GbpBar(
-                        session=bar.session,
-                        open=bar.open,
-                        high=bar.high,
-                        low=bar.low,
-                        close=bar.close,
-                        signal_close=bar.adjusted_close,
-                        volume=bar.volume,
-                        dividend=ZERO,
+                notes.append(f"{ticker} uses adjusted OHLC for signals and fills. Dividends are not also reinvested.")
+            if has_dividend:
+                notes.append(f"{ticker} dividend column was ignored to avoid double-counting adjusted close.")
+            prepared = []
+            for bar in bars:
+                assert bar.adjusted_close is not None
+                if commensurate:
+                    ratio = bar.adjusted_close / bar.close
+                    prepared.append(
+                        GbpBar(
+                            session=bar.session,
+                            open=bar.open * ratio,
+                            high=bar.high * ratio,
+                            low=bar.low * ratio,
+                            close=bar.adjusted_close,
+                            signal_close=bar.adjusted_close,
+                            volume=bar.volume,
+                            dividend=ZERO,
+                        )
                     )
-                )
-        basis = "adjusted_close_index" if index_signal else "adjusted_close"
-        return PreparedSeries(ticker, tuple(prepared), basis, "ignore", tuple(notes))
+                else:
+                    prepared.append(
+                        GbpBar(
+                            session=bar.session,
+                            open=bar.open,
+                            high=bar.high,
+                            low=bar.low,
+                            close=bar.close,
+                            signal_close=bar.adjusted_close,
+                            volume=bar.volume,
+                            dividend=ZERO,
+                        )
+                    )
+            basis = "adjusted_close_index" if index_signal else "adjusted_close"
+            return PreparedSeries(ticker, tuple(prepared), basis, "ignore", tuple(notes))
 
     if has_dividend or return_method == "distributions":
         notes.append(

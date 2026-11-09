@@ -32,6 +32,7 @@ class NavRow:
     nav_gbp: Decimal
     gross_exposure: Decimal
     cash_weight: Decimal
+    holdings: tuple[tuple[str, Decimal], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +75,46 @@ def sample_stdev(values: Sequence[Decimal]) -> Decimal:
     mean = sum(values, ZERO) / Decimal(count)
     accumulator = sum(((value - mean) ** 2 for value in values), ZERO)
     return (accumulator / Decimal(count - 1)).sqrt()
+
+
+def sharpe_ratio(returns: Sequence[Decimal]) -> Decimal | None:
+    """Annualised Sharpe with a zero risk-free rate and a sample deviation."""
+    if len(returns) < 2:
+        return None
+    deviation = sample_stdev(returns)
+    if deviation == 0:
+        return None
+    mean = sum(returns, ZERO) / Decimal(len(returns))
+    return (mean / deviation * TRADING_DAYS.sqrt()).quantize(METRIC_QUANTUM)
+
+
+def excess_sharpe(strategy_rows: Sequence[NavRow], funding_rows: Sequence[NavRow]) -> Decimal | None:
+    """Sharpe of strategy daily return minus the funding path's daily return.
+
+    The research review uses an XSTR total-return path as the funding series.
+    That is a traded cash-proxy ETF, not the Bank of England SONIA print and
+    not a guaranteed rate.
+    """
+    funding = {row.session: row.nav_gbp for row in funding_rows}
+    excess: list[Decimal] = []
+    previous_strategy: NavRow | None = None
+    previous_funding: Decimal | None = None
+    for row in strategy_rows:
+        current_funding = funding.get(row.session)
+        if (
+            previous_strategy is not None
+            and previous_funding is not None
+            and current_funding is not None
+            and previous_strategy.nav_gbp > 0
+            and previous_funding > 0
+        ):
+            strategy_return = row.nav_gbp / previous_strategy.nav_gbp - 1
+            funding_return = current_funding / previous_funding - 1
+            excess.append(strategy_return - funding_return)
+        previous_strategy = row
+        if current_funding is not None:
+            previous_funding = current_funding
+    return sharpe_ratio(excess)
 
 
 def daily_returns(rows: Sequence[NavRow]) -> list[Decimal]:
@@ -157,7 +198,7 @@ def performance(
     deviation = sample_stdev(returns) if len(returns) >= 2 else ZERO
     mean = sum(returns, ZERO) / Decimal(len(returns)) if returns else ZERO
     volatility = deviation * TRADING_DAYS.sqrt() if len(returns) >= 2 else None
-    sharpe = None if deviation == 0 or volatility is None else mean / deviation * TRADING_DAYS.sqrt()
+    sharpe = sharpe_ratio(returns)
     downside_acc = sum((min(value, ZERO) ** 2 for value in returns), ZERO)
     downside = (downside_acc / Decimal(len(returns) - 1)).sqrt() if len(returns) >= 2 else ZERO
     sortino = None if downside == 0 else mean / downside * TRADING_DAYS.sqrt()
