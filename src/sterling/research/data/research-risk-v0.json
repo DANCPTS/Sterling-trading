@@ -1,0 +1,40 @@
+{
+  "schema": "research-risk-v0",
+  "status": "PROPOSED - pending owner approval",
+  "owner_approved": false,
+  "owner": "Daniel Pawela",
+  "purpose": "Research-only simulator limits. Not Desk Rules v0.2 and not the Stage 2 Gate 1 policy. These numbers are not the operational GBP 2.50 per-trade ceiling or the GBP 5.00 daily-loss ceiling. They do not authorise execution.",
+  "execution_permission": "NOT_ISSUED",
+  "not_operational_policy": true,
+  "account": {
+    "currency": "GBP",
+    "research_starting_nav_gbp": "10000.00",
+    "note": "Illustration assumption only. Not the operational simulated desk account of GBP 500.00."
+  },
+  "constraints": {
+    "long_only": true,
+    "shorts": false,
+    "leverage": false,
+    "borrowing": false,
+    "max_gross_exposure": "1",
+    "cash_weight_min": "0",
+    "cash_weight_max": "1",
+    "cash_always_allowed": true,
+    "max_single_instrument_weight": "0.50",
+    "max_asset_class_weight": {
+      "equity": "0.80",
+      "bond": "0.80",
+      "commodity": "0.20",
+      "cash_proxy": "1",
+      "ultrashort_bond": "0.40"
+    },
+    "min_trade_notional_gbp": "25.00",
+    "max_one_way_turnover": "0.50",
+    "rebalance": "monthly",
+    "notes": [
+      "One-way turnover is 0.5 * sum of absolute instrument-weight changes. Cash is the residual and is not double-counted. Moving from cash to 100% in one instrument is 0.50. Swapping one fully invested instrument for another is 1.00 and would be scaled.",
+      "The 0.50 single-instrument cap also applies to XSTR. A 100% cash-proxy ETF position is clipped. Literal cash can still be 100%.",
+      "The 0.20 commodity cap applies to SGLN. It is a placeholder, not an approved allocation."
+    ]
+  }
+}

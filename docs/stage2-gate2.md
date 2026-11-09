@@ -118,8 +118,10 @@ replaced.
 
 ## What is still deferred
 
-- Executable tickets, ticket consumption, and any simulator path. An absent
-  simulator is not a passed bypass test.
+- Executable tickets, ticket consumption, and any simulator that can reach
+  execution. `sterling.research` is a separate research-only path. Gate 2 does
+  not call it, and it does not submit orders. An absent execution path is not
+  a passed bypass test.
 - Atomic fill and stop execution, gaps, adverse fills, and stop slippage.
 - Broker, market-data, and network adapters.
 - Approved quote ages, FX ages, sources, and session numbers. They stay deny.

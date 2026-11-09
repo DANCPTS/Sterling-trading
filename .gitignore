@@ -11,3 +11,5 @@ build/
 .venv/
 venv/
 *.jsonl.tmp
+.research-cache/
+research-output/
