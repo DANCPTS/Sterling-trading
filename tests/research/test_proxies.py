@@ -8,6 +8,7 @@ from decimal import Decimal
 from sterling.research.costs import research_cost_model
 from sterling.research.proxies import (
     compound_annual_percent,
+    distribution_total_return,
     drop_isolated_spikes,
     hedged_return_index,
     ratio_splice,
@@ -100,6 +101,17 @@ def test_two_point_band_skips_drift_and_allows_a_real_exit() -> None:
         no_trade_band=Decimal("0.02"),
     )
     assert exit_book.weight_map() == {"CASH": Decimal("1")}
+
+
+def test_dividend_is_reinvested_on_its_own_session() -> None:
+    levels = distribution_total_return(
+        (
+            (date(2024, 8, 20), Decimal("100"), Decimal("0")),
+            (date(2024, 8, 21), Decimal("97.5"), Decimal("2.5")),
+            (date(2024, 8, 22), Decimal("97.5"), Decimal("0")),
+        )
+    )
+    assert [level for _day, level in levels] == [Decimal("100"), Decimal("100"), Decimal("100")]
 
 
 def test_isolated_price_spikes_are_dropped_and_sustained_moves_stay() -> None:

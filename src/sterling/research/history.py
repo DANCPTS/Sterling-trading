@@ -28,6 +28,7 @@ from sterling.research.metrics import NavRow, Performance, performance, sharpe_r
 from sterling.research.money import ZERO
 from sterling.research.proxies import (
     compound_annual_percent,
+    distribution_total_return,
     drop_isolated_spikes,
     hedged_return_index,
     ratio_splice,
@@ -204,19 +205,12 @@ def _prepared_levels(path: Path) -> list[tuple[date, Decimal]]:
         bars=filled,
         calendar=calendar,
     )
-    # Distribution mode keeps the raw close and a dividend. Rebuild a reinvested index
-    # so the stored sleeve is one total-return price.
+    # The dividend belongs on its own session. Using the previous bar's dividend
+    # leaves a one-day hole the size of the distribution.
     if prepared.dividend_mode == "reinvest":
-        level = prepared.bars[0].close
-        out = [(prepared.bars[0].session, level)]
-        for previous, bar in zip(prepared.bars, prepared.bars[1:], strict=False):
-            if previous.close <= 0:
-                continue
-            gross = bar.close / previous.close
-            income = previous.dividend / previous.close if previous.close else ZERO
-            level *= gross + income
-            out.append((bar.session, level))
-        return out
+        return list(
+            distribution_total_return([(bar.session, bar.close, bar.dividend) for bar in prepared.bars])
+        )
     return [(bar.session, bar.close) for bar in prepared.bars]
 
 
@@ -611,10 +605,24 @@ def format_history() -> str:
         "AGBP after that date is the real GBP-hedged ETF and is not converted again.",
         "GOLD: Yahoo GC=F COMEX futures in USD converted with XUDLUSS until SGLN on 2011-04-08. Not LBMA spot and not an ETC. "
         "Roll bias is not measured. FRED LBMA gold was not retrieved.",
-        "CASH: Bank of England IUDSOIA (SONIA, percent) compounded on a 365.25-day year until the first XSTR session, then XSTR "
-        "with distributions reinvested because its adjusted close is flat. SONIA's methodology changed in the 2018 reform. "
+        "CASH: Bank of England IUDSOIA (SONIA, percent) compounded on a 365.25-day year until XSTR, "
+        "then XSTR with the distribution added on the ex-date. Its adjusted close is flat. "
+        "SONIA's 2018 reform means the rate is not one unchanged instrument. "
         "The index is not a deposit and not XSTR's fee.",
+        "The operational £2.50 per-trade figure and the £5.00 daily figure are risk and loss caps, not position-size limits.",
         "FX source: Bank of England XUDLUSS, daily USD per GBP, carried onto XLON sessions when the print is missing.",
+        "",
+        "Proxy limitations:",
+        "- Global equity before VWRL is 60% SPY, 30% EFA and 10% EEM, unhedged, from 2003-04-14. It is not the FTSE All-World.",
+        "- UK equity before ISF is the FTSE 100 price index. Dividends are missing, so that stretch is biased down.",
+        "- There is no gilt total-return proxy before IGLT on 2008-01-02.",
+        "- Bonds before AGBP are the USD aggregate AGG, hedged by a SONIA minus T-bill differential.",
+        "  That is not the Bloomberg Global Aggregate.",
+        "- Gold before SGLN is COMEX futures. Roll bias is unmeasured. It is not LBMA spot and not the ETC.",
+        "- Cash before XSTR is compounded SONIA. The 2018 reform changed the rate. It is not a deposit.",
+        "- A splice scales the proxy onto the later ETF and then discards the proxy.",
+        "  The ETF that can be spliced is one that listed and survived.",
+        "  The proxy stretch is not that ETF's trading record.",
         "",
         "Sleeve total-return changes. Proxy and real stretches are not comparable to each other as ETF trading.",
     ]
@@ -643,6 +651,10 @@ def format_history() -> str:
             lines.append("  real ETF only; no proxy stretch")
         if name == "CASH":
             lines.append("  SONIA index before XSTR, then XSTR. Not a deposit.")
+            lines.append(
+                "  SONIA before the splice does not fall. XSTR distributions are added on the ex-date. "
+                f"Cash-sleeve peak to trough: {_peak_to_trough(series, series[0][0], series[-1][0])}."
+            )
     lines.append("")
     lines.append("Peak to trough inside the window (GBP unless noted). This is why a 12-month return rule can miss a crash:")
     vwrp = _prepared_levels(YAHOO / "VWRP.csv")

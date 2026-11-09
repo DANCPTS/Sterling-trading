@@ -3,7 +3,8 @@
 Available budgets round down to the penny. Risk, notional, and cash
 consumption round up. The Stage 1 cap helpers stay on half-even rounding
 and are not used here, so a Gate 1 budget is never looser than that display
-figure and never above the owner-approved absolute ceilings.
+figure and never above the owner-approved absolute risk and loss caps.
+The £2.50 and £5.00 figures are those caps, not position-size limits.
 
 Booked fees are not parameters of the incremental-risk functions. Day loss
 already contains them through equity. Passing the mark, rather than the

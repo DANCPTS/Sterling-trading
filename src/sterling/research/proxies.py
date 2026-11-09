@@ -40,6 +40,33 @@ def drop_isolated_spikes(levels: Sequence[Point], limit: Decimal = Decimal("0.25
     return tuple(kept)
 
 
+def distribution_total_return(
+    observations: Sequence[tuple[date, Decimal, Decimal]],
+) -> tuple[Point, ...]:
+    """Reinvest a dividend on the session that carries it.
+
+    ``observations`` are ``(session, close, dividend)`` in one currency.
+    The index follows ``(close + dividend) / previous close``. Putting the
+    dividend on the next session leaves a one-day hole the size of the
+    distribution. That hole is not a fall in the cash index.
+    """
+    if not observations:
+        return ()
+    ordered = sorted(observations, key=lambda item: item[0])
+    level = ordered[0][1]
+    if level <= 0:
+        raise ResearchError("distribution total return needs a positive first close")
+    out = [(ordered[0][0], level)]
+    previous_close = level
+    for day, close, dividend in ordered[1:]:
+        if close <= 0 or dividend < 0:
+            raise ResearchError(f"distribution total return has a bad print on {day.isoformat()}")
+        level *= (close + dividend) / previous_close
+        out.append((day, level))
+        previous_close = close
+    return tuple(out)
+
+
 def usd_price_to_gbp(price_usd: Decimal, usd_per_gbp: Decimal) -> Decimal:
     """Convert a US-dollar price using Bank of England dollars-per-pound.
 

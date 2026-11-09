@@ -4,7 +4,7 @@
   "owner_approved": false,
   "research_simulation_only": true,
   "owner": "Daniel Pawela",
-  "purpose": "Research-only simulator limits. Not Desk Rules v0.2 and not the Stage 2 Gate 1 policy. These numbers are not the operational GBP 2.50 per-trade ceiling or the GBP 5.00 daily-loss ceiling. They do not authorise execution.",
+  "purpose": "Research-only simulator limits. Not Desk Rules v0.2 and not the Stage 2 Gate 1 policy. These numbers are not the operational GBP 2.50 per-trade risk cap or the GBP 5.00 daily-loss cap. Those operational figures are risk and loss caps, not position-size limits. They do not authorise execution.",
   "execution_permission": "NOT_ISSUED",
   "not_operational_policy": true,
   "account": {

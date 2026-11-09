@@ -12,6 +12,9 @@ rewrites its own hash is still rejected when the pin does not match.
 
 ## Encoded constraints
 
+The £2.50 and £5.00 figures below are operational risk and loss caps. They are
+not position-size limits.
+
 - Primary account: £500.00 simulated GBP. Opening cash is the account, not a
   deposit that arrived during the day.
 - Per-trade planned risk = `min(0.5% of current equity, £2.50)`. The budget

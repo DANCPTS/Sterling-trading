@@ -25,7 +25,8 @@ field is only the arithmetic. The same result always has
 
 ## Owner-approved numbers
 
-Unchanged from Desk Rules v0.2:
+The £2.50 and £5 figures are operational risk and loss caps, not position-size
+limits. Unchanged from Desk Rules v0.2:
 
 - Simulated primary account £500.
 - Per-trade planned risk `min(0.5% of fresh validated current equity, £2.50)`.

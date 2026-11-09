@@ -12,7 +12,8 @@ orders, connects to a broker, or fetches prices.
 - The instrument allowlist in Desk Rules v0.2 is empty. The ledger does not
   consult it, so tests can post synthetic ids. A later order gateway must refuse
   every instrument while the allowlist is empty.
-- Absolute ceilings are £2.50 per trade and £5.00 daily loss. Raising either one
+- The operational per-trade risk cap is £2.50 and the operational daily-loss cap is £5.00.
+  They are risk and loss caps, not position-size limits. Raising either one
   is rejected unless a new owner-approved rules version is added in code and in
   the rules file.
 - Tests use invented `SYNTH-*` instruments and hand-written decimals. They are
@@ -34,7 +35,8 @@ The primary simulated account opens at **£500.00**. That opening cash is not an
 external deposit.
 
 Per-trade planned risk is `min(0.5% of current equity, £2.50)`. The daily-loss
-threshold is `min(1% of day-opening equity, £5.00)`. Both ceilings are absolute.
+threshold is `min(1% of day-opening equity, £5.00)`. Both are absolute risk and
+loss caps, not position-size limits.
 At £500 both percentage terms land on the ceiling, so the budgets are £2.50 and
 £5.00. The per-trade budget already includes expected costs and an adverse
 execution allowance. Stage 1 calculates these budgets and the day-loss figure.
@@ -104,7 +106,8 @@ tests/                     synthetic pytest suite
 `Backtester` placeholder, which still raises `NotImplementedError`. Gate 2
 does not import it. It does not submit orders, call a broker, or fetch data.
 `execution_permission` stays `NOT_ISSUED`. Desk Rules v0.2 and the Stage 2
-policy, including the £2.50 / £5 ceilings, the provisional holding window,
+policy, including the £2.50 per-trade risk cap and the £5.00 daily-loss cap
+(not position-size limits), the provisional holding window,
 execution DENY, and the empty allowlist, are not read or modified here.
 
 The draft universe is not frozen. The provisional starting set is VWRP, CUKX,
@@ -148,6 +151,17 @@ A draft Yahoo check that ended on 2026-09-21 matched an exclusive chart
 `period2` at 2026-09-22T00:00Z. The same endpoint on 2026-11-09 returned bars
 through 2026-11-09. Do not treat 2026-09-21 as the last session. Do not commit
 downloaded files. Put CSVs in a gitignored `.research-cache/` directory.
+
+The long history uses proxies where the ETF did not yet exist. Global equity
+before VWRL is a 60/30/10 mix of SPY, EFA and EEM, unhedged, from 2003, and is
+not the FTSE All-World. UK equity before ISF is the FTSE 100 price index, so
+dividends are missing and that stretch is biased down. There is no gilt
+total-return proxy before IGLT in 2008. Bonds before AGBP are a USD aggregate
+hedged with a rate differential, not the Bloomberg Global Aggregate. Gold
+before SGLN is a COMEX futures series, with unmeasured roll bias, not LBMA
+spot and not the ETC. Cash before XSTR is compounded SONIA, which changed in
+the 2018 reform and is not a deposit. Splicing keeps the later listed fund,
+so the proxy stretch is not that fund's own trading record.
 
 ```bash
 python -m sterling.research
