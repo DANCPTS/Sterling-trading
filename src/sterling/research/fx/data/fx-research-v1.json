@@ -1,0 +1,160 @@
+{
+  "version_id": "fx-research-v1",
+  "status": "APPROVED FOR RESEARCH SIMULATION ONLY by owner 2026-11-09; not operational",
+  "owner_approved": false,
+  "live_trading": false,
+  "execution_permission": "NOT_ISSUED",
+  "orders_submitted": 0,
+  "leverage": "none",
+  "short_selling": "prohibited",
+  "book": "unleveraged long-only foreign-currency deposits funded 1:1 from GBP, or GBP cash",
+  "gross_exposure_max": "1",
+  "starting_nav_gbp": "10000.00",
+  "day_count": "ACT/365",
+  "signal_frequency": "monthly",
+  "decision": "first panel day after the month-end fix",
+  "execution": "that decision day's spot; the decision-day spot is not an input to the signal",
+  "min_month_ends": 13,
+  "oos_fraction": "0.40",
+  "stale_rate_days": 100,
+  "early_spread_before": "2005-01-01",
+  "early_spread_multiplier": "2",
+  "crisis_spread_multiplier": "3",
+  "bootstrap": {
+    "block_months": 6,
+    "replications": 2000,
+    "seed": 20261109,
+    "ci": "0.90"
+  },
+  "walk_forward": {
+    "train_months": 60,
+    "test_months": 12,
+    "step_months": 12
+  },
+  "primary_cost_scenario": "retail_primary",
+  "primary_deposit_scenario": "retail_headline",
+  "universe": [
+    {"code": "USD", "name": "US dollar", "boe_series": "XUDLUSS", "bis_area": "US"},
+    {"code": "EUR", "name": "euro", "boe_series": "XUDLERS", "bis_area": "XM"},
+    {"code": "JPY", "name": "Japanese yen", "boe_series": "XUDLJYS", "bis_area": "JP"},
+    {"code": "CHF", "name": "Swiss franc", "boe_series": "XUDLSFS", "bis_area": "CH"},
+    {"code": "AUD", "name": "Australian dollar", "boe_series": "XUDLADS", "bis_area": "AU"},
+    {"code": "CAD", "name": "Canadian dollar", "boe_series": "XUDLCDS", "bis_area": "CA"},
+    {"code": "NZD", "name": "New Zealand dollar", "boe_series": "XUDLNDS", "bis_area": "NZ"},
+    {"code": "SEK", "name": "Swedish krona", "boe_series": "XUDLSKS", "bis_area": "SE"},
+    {"code": "NOK", "name": "Norwegian krone", "boe_series": "XUDLNKS", "bis_area": "NO"}
+  ],
+  "retail_half_spread": {
+    "USD": "0.0004",
+    "EUR": "0.0004",
+    "JPY": "0.0005",
+    "CHF": "0.0005",
+    "AUD": "0.0008",
+    "CAD": "0.0008",
+    "NZD": "0.0010",
+    "SEK": "0.0012",
+    "NOK": "0.0012"
+  },
+  "institutional_half_spread": {
+    "USD": "0.00005",
+    "EUR": "0.00005",
+    "JPY": "0.00010",
+    "CHF": "0.00010",
+    "AUD": "0.00015",
+    "CAD": "0.00015",
+    "NZD": "0.00020",
+    "SEK": "0.00030",
+    "NOK": "0.00030"
+  },
+  "spread_crisis_windows": [
+    {"name": "gfc", "start": "2008-09-01", "end": "2009-03-31"},
+    {"name": "brexit_vote", "start": "2016-06-23", "end": "2016-07-08"},
+    {"name": "covid", "start": "2020-03-01", "end": "2020-04-30"},
+    {"name": "gilt_crisis", "start": "2022-09-23", "end": "2022-10-14"}
+  ],
+  "performance_windows": [
+    {"name": "year_2008", "start": "2008-01-01", "end": "2008-12-31"},
+    {"name": "brexit_vote", "start": "2016-06-23", "end": "2016-07-31"},
+    {"name": "covid_2020", "start": "2020-02-20", "end": "2020-04-30"},
+    {"name": "gilt_crisis_2022", "start": "2022-09-23", "end": "2022-10-14"}
+  ],
+  "cost_scenarios": [
+    {"name": "retail_low", "platform_fee_round_trip": "0.0025", "spread_set": "retail"},
+    {"name": "retail_primary", "platform_fee_round_trip": "0.0050", "spread_set": "retail"},
+    {"name": "retail_high", "platform_fee_round_trip": "0.0100", "spread_set": "retail"},
+    {"name": "institutional", "platform_fee_round_trip": "0", "spread_set": "institutional"}
+  ],
+  "deposit_scenarios": [
+    {
+      "name": "retail_headline",
+      "gbp_reference": "sonia",
+      "gbp_haircut": "0.0100",
+      "foreign_haircut": "0.0150",
+      "floor_at_zero": true,
+      "foreign_forced_rate": null,
+      "label": "headline achievable retail"
+    },
+    {
+      "name": "retail_mild",
+      "gbp_reference": "sonia",
+      "gbp_haircut": "0.0050",
+      "foreign_haircut": "0.0050",
+      "floor_at_zero": true,
+      "foreign_forced_rate": null,
+      "label": "milder haircut, still floored at zero"
+    },
+    {
+      "name": "foreign_zero",
+      "gbp_reference": "sonia",
+      "gbp_haircut": "0.0100",
+      "foreign_haircut": "0",
+      "floor_at_zero": true,
+      "foreign_forced_rate": "0",
+      "label": "multi-currency account pays nothing on foreign balances"
+    },
+    {
+      "name": "bank_rate_gbp",
+      "gbp_reference": "bank_rate",
+      "gbp_haircut": "0.0100",
+      "foreign_haircut": "0.0150",
+      "floor_at_zero": true,
+      "foreign_forced_rate": null,
+      "label": "GBP leg uses lagged Bank Rate instead of SONIA"
+    },
+    {
+      "name": "reference_upper_bound",
+      "gbp_reference": "sonia",
+      "gbp_haircut": "0",
+      "foreign_haircut": "0",
+      "floor_at_zero": false,
+      "foreign_forced_rate": null,
+      "label": "NOT achievable retail; wholesale reference rates with no haircut"
+    }
+  ],
+  "trend": {
+    "rule": "sma",
+    "months": 10,
+    "weighting": "equal",
+    "sensitivity_months": [6, 12],
+    "return_months": 12,
+    "vol_window": 36,
+    "vol_min": 12
+  },
+  "carry": {
+    "k": 3,
+    "threshold": "0.0050",
+    "sensitivity_k": [1, 2],
+    "sensitivity_threshold": ["0", "0.0100"]
+  },
+  "source_notes": [
+    "Spots: Bank of England IADB daily sterling fixes, foreign currency per 1 GBP, about 16:00 London. USD XUDLUSS, EUR XUDLERS, JPY XUDLJYS, CHF XUDLSFS, AUD XUDLADS, CAD XUDLCDS, NZD XUDLNDS, SEK XUDLSKS, NOK XUDLNKS. EUR starts 1999-01-04. No DEM or ECU proxy.",
+    "A day-t spot is not usable for a decision on day t. Signals use month-end fixes only. Execution is the next panel day's fix.",
+    "GBP deposit reference: Bank of England daily SONIA, IUDSOIA, percent per year. A print is usable from the next London business day (SONIA is published the next morning). Bank Rate IUDBEDR is the same lag and is only the bank_rate_gbp scenario.",
+    "Foreign and GBP policy rates: BIS WS_CBPOL monthly, percent per year, areas US, XM (euro area), JP, CH, AU, CA, NZ, SE, NO, GB. A month-M observation is usable from the 15th of month M+2. An observation older than 100 days is stale: carry will not select it, and accrual uses zero rather than inventing a rate. JPY has multi-year BIS gaps.",
+    "Primary retail deposit: max(lagged SONIA - 1.00 percentage point, 0) in GBP, and max(lagged policy rate - 1.50 percentage points, 0) in foreign currency. The wider foreign haircut is the stand-in for retail and multi-currency accounts paying well below policy, often about zero in JPY, CHF and EUR in the 2010s. It was set before the runs. The grid is not a search.",
+    "Primary platform FX fee is 0.50% round trip, charged half on each conversion, plus the retail half-spread. Half-spreads double before 2005 and triple in the pre-set crisis windows; the multipliers do not compound. Institutional is a comparison scenario, not the headline.",
+    "Cash benchmark is this GBP deposit series, not XSTR and not the operational desk. The GBP 2.50 per-trade risk cap and the GBP 5.00 daily-loss cap are operational risk caps, not position-size limits, and are not read here.",
+    "Trend holds the foreign currencies whose GBP value is above a 10-month average, equal weight, otherwise GBP cash. Carry holds up to 3 currencies whose lagged retail rate exceeds the lagged GBP retail rate by more than 0.50 percentage points, otherwise GBP cash. No shorts and no leverage. Combined is headline only if both legs beat GBP cash in-sample and out of sample on the pre-set rule.",
+    "Out-of-sample slice is the last 40% of decision dates. Walk-forward windows are 60 months then 12 months. Neither slice is allowed to change the rules. Block bootstrap uses 6-month circular blocks, 2000 draws, seed 20261109, 90% interval."
+  ]
+}

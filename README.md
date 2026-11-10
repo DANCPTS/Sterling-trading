@@ -172,6 +172,28 @@ Local CSV columns: `date,open,high,low,close,volume`, plus optional
 `adjusted_close`, `dividend`, and `quoted_in`. Stooq files are local only, and
 their price unit is unverified until you pass it explicitly.
 
-Not built yet: a Grok proposal source with forward-only timestamped evaluation
-(the logging stub rejects model calls), individual-stock momentum, FX research,
-breakout, mean reversion, and swing research. None of those are order paths.
+## FX deposit study
+
+`sterling.research.fx` is a separate research book: unleveraged long-only
+foreign-currency deposits funded 1:1 from GBP, or GBP cash. It does not short,
+use leverage, submit orders, or read the operational £2.50 per-trade risk cap
+or the £5.00 daily-loss cap. Those caps are not position-size limits. The cash
+benchmark is a lagged SONIA deposit with the pre-registered retail haircut, not
+XSTR. Rules, costs, and lags live in
+`src/sterling/research/fx/data/fx-research-v1.json` and are not refit to the
+sample. Cache files stay in gitignored `.research-cache/`. Refresh them with
+`scripts/fetch_fx_research_data.py` (free Bank of England and BIS files, no API
+key). Then:
+
+```bash
+python -m sterling.research.fx --cache .research-cache/fx/raw --output .research-cache/fx/out
+```
+
+The Grok forward logger in `sterling.research.fx.grok_forward` is append-only
+and hash-chained. It scores a proposal only on prices after its UTC timestamp,
+rejects back-dated entries, and does not call a model or backfill a track
+record. The API hook is disabled.
+
+Not built yet: individual-stock momentum, breakout, mean reversion, and swing
+research. None of those are order paths. The older `GrokProposalStub` still
+refuses model calls.
