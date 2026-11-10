@@ -208,9 +208,7 @@ def _prepared_levels(path: Path) -> list[tuple[date, Decimal]]:
     # The dividend belongs on its own session. Using the previous bar's dividend
     # leaves a one-day hole the size of the distribution.
     if prepared.dividend_mode == "reinvest":
-        return list(
-            distribution_total_return([(bar.session, bar.close, bar.dividend) for bar in prepared.bars])
-        )
+        return list(distribution_total_return([(bar.session, bar.close, bar.dividend) for bar in prepared.bars]))
     return [(bar.session, bar.close) for bar in prepared.bars]
 
 
@@ -384,14 +382,17 @@ def _run(
 
 
 def _balanced(bars: Mapping[str, tuple[Bar, ...]]) -> tuple[tuple[NavRow, ...], Performance, Decimal]:
-    instruments = {name: _sleeve(name, asset) for name, asset in (
-        ("GLOBAL", "equity"),
-        ("UK", "equity"),
-        ("GILT", "bond"),
-        ("GAGG", "bond"),
-        ("GOLD", "commodity"),
-        ("CASH", "cash_proxy"),
-    )}
+    instruments = {
+        name: _sleeve(name, asset)
+        for name, asset in (
+            ("GLOBAL", "equity"),
+            ("UK", "equity"),
+            ("GILT", "bond"),
+            ("GAGG", "bond"),
+            ("GOLD", "commodity"),
+            ("CASH", "cash_proxy"),
+        )
+    }
     prepared = {
         name: prepare_series(
             ticker=name,
@@ -613,7 +614,7 @@ def format_history() -> str:
         "shows NAV 191.158812 on 13 Mar and 191.160173 on 17 Mar, and the DB SONIA TR index also rose. "
         "The Yahoo LSE close fell from 182.56 to 179.645 pounds. That is a traded-price gap to NAV, not a NAV loss. "
         "The free DWS Excel export contained no NAV rows. A second exchange price was not freely available.",
-        "The operational £2.50 per-trade figure and the £5.00 daily figure are risk and loss caps, not position-size limits.",
+        "£2.50/£5 are operational risk/loss caps, not position-size limits.",
         f"Cash benchmark for reuse: {export_path.as_posix()} (gitignored). "
         "total_return_index counts the distribution on the ex-date. It is not the simulated reinvestment.",
         "FX source: Bank of England XUDLUSS, daily USD per GBP, carried onto XLON sessions when the print is missing.",
@@ -641,6 +642,22 @@ def format_history() -> str:
     for name, series in levels.items():
         if not series:
             continue
+        if name == "CASH":
+            accrual = distribution_total_return([(bar.session, bar.close, bar.dividend or ZERO) for bar in sleeves["CASH"]])
+            lines.append(
+                f"{name} {accrual[0][0].isoformat()}..{accrual[-1][0].isoformat()} "
+                f"accrual_full_change {_period_return(accrual, accrual[0][0], accrual[-1][0])}"
+            )
+            lines.append(
+                "  Traded close, which falls on ex-dates by the distribution: "
+                f"{_period_return(series, series[0][0], series[-1][0])}."
+            )
+            lines.append("  SONIA index before XSTR, then the traded XSTR price. Not a deposit.")
+            lines.append(
+                "  Accrual index counts the distribution on the ex-date. "
+                f"Peak to trough: {_peak_to_trough(accrual, accrual[0][0], accrual[-1][0])}."
+            )
+            continue
         lines.append(
             f"{name} {series[0][0].isoformat()}..{series[-1][0].isoformat()} "
             f"full_change {_period_return(series, series[0][0], series[-1][0])}"
@@ -655,15 +672,6 @@ def format_history() -> str:
                 lines.append(f"  from {first.isoformat()} real_etf {_period_return(series, first, series[-1][0])}")
         if name == "GILT":
             lines.append("  real ETF only; no proxy stretch")
-        if name == "CASH":
-            accrual = distribution_total_return(
-                [(bar.session, bar.close, bar.dividend or ZERO) for bar in sleeves["CASH"]]
-            )
-            lines.append("  SONIA index before XSTR, then the traded XSTR price. Not a deposit.")
-            lines.append(
-                "  Accrual index counts the distribution on the ex-date. "
-                f"Peak to trough: {_peak_to_trough(accrual, accrual[0][0], accrual[-1][0])}."
-            )
     lines.append("")
     lines.append("Peak to trough inside the window (GBP unless noted). This is why a 12-month return rule can miss a crash:")
     vwrp = _prepared_levels(YAHOO / "VWRP.csv")

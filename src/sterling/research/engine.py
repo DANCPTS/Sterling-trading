@@ -310,9 +310,7 @@ def _distributions(
         if book.cash < 0:
             raise ResearchError("distribution reinvestment would make cash negative")
         book.quantity[item.ticker] = book.quantity.get(item.ticker, ZERO) + quote.quantity
-        fills.append(
-            _fill_from_quote(quote, ticker=item.ticker, session=day, signal_date=None, cash_after=book.cash)
-        )
+        fills.append(_fill_from_quote(quote, ticker=item.ticker, session=day, signal_date=None, cash_after=book.cash))
     return fills
 
 

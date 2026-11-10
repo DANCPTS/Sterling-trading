@@ -121,9 +121,7 @@ def cash_sleeve_bars() -> tuple[list[Bar], date]:
                 quoted_in="GBP",
             )
         )
-    indexed = dict(
-        distribution_total_return([(bar.session, bar.close, bar.dividend or ZERO) for bar in bars])
-    )
+    indexed = dict(distribution_total_return([(bar.session, bar.close, bar.dividend or ZERO) for bar in bars]))
     bars = [replace(bar, signal_level=indexed[bar.session]) for bar in bars]
     return bars, first
 
@@ -131,9 +129,7 @@ def cash_sleeve_bars() -> tuple[list[Bar], date]:
 def write_cash_benchmark(path: Path | None = None) -> Path:
     """Write the accrual total-return index. Creates the gitignored export directory."""
     bars, xstr_start = cash_sleeve_bars()
-    indexed = dict(
-        distribution_total_return([(bar.session, bar.close, bar.dividend or ZERO) for bar in bars])
-    )
+    indexed = dict(distribution_total_return([(bar.session, bar.close, bar.dividend or ZERO) for bar in bars]))
     destination = path or EXPORT
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("w", newline="", encoding="utf-8") as handle:
