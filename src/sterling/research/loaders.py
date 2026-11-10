@@ -80,6 +80,7 @@ def bars_from_rows(
 
         adjusted_text = _cell(row, "adjusted_close", "adj_close", "Adj Close")
         dividend_text = _cell(row, "dividend", "dividends")
+        pay_text = _cell(row, "pay_date", "payment_date", "paydate")
         volume_text = _cell(row, "volume", "Volume")
         bars.append(
             Bar(
@@ -92,6 +93,7 @@ def bars_from_rows(
                 adjusted_close=_decimal(adjusted_text, "adjusted_close") if adjusted_text is not None else None,
                 dividend=_decimal(dividend_text, "dividend") if dividend_text is not None else None,
                 quoted_in=quoted,
+                pay_date=_parse_date(pay_text) if pay_text is not None else None,
             )
         )
     return tuple(bars)

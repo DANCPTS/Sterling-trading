@@ -8,7 +8,7 @@ from decimal import Decimal
 import pytest
 
 from sterling.research.costs import CostModel, affordable_buy, quote_trade
-from sterling.research.engine import _Book, _dividends, _rebalance
+from sterling.research.engine import _Book, _distributions, _rebalance
 from sterling.research.errors import ResearchError
 from sterling.research.instruments import Instrument, gross_index_fee_drag
 from sterling.research.money import ZERO_MONEY
@@ -192,9 +192,12 @@ def test_execution_refuses_leverage_and_reinvests_a_distribution_once() -> None:
         (),
     )
     holding = _Book(cash=Decimal("0.00"), quantity={"T": Decimal("10")})
-    _dividends(holding, {"T": prepared}, DAY, {"T": instrument}, CostModel())
-    assert holding.quantity["T"] == Decimal("10.2")
+    from sterling.research.calendar import xlon
+
+    _distributions(holding, {"T": prepared}, DAY, {"T": instrument}, CostModel(), xlon(), {"T": Decimal("100")})
+    assert holding.quantity["T"] == Decimal("10")
     assert holding.cash == Decimal("0.00")
+    assert holding.receivable() == Decimal("20.00")
 
 
 def test_cash_proxy_can_be_fully_invested_and_a_risk_off_exit_is_not_scaled() -> None:

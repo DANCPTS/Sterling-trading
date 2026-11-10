@@ -46,6 +46,8 @@ class Bar:
     adjusted_close: Decimal | None = None
     dividend: Decimal | None = None
     quoted_in: str = "GBP"
+    pay_date: date | None = None
+    signal_level: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +60,7 @@ class GbpBar:
     signal_close: Decimal
     volume: Decimal
     dividend: Decimal
+    pay_date: date | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +113,8 @@ def _enclose_open_close(bar: Bar) -> tuple[Bar, bool]:
             adjusted_close=bar.adjusted_close,
             dividend=bar.dividend,
             quoted_in=bar.quoted_in,
+            pay_date=bar.pay_date,
+            signal_level=bar.signal_level,
         ),
         True,
     )
@@ -173,6 +178,8 @@ def _scale_bar(bar: Bar, major: str) -> Bar:
         adjusted_close=adjusted,
         dividend=dividend,
         quoted_in=major,
+        pay_date=bar.pay_date,
+        signal_level=bar.signal_level,
     )
 
 
@@ -332,9 +339,10 @@ def _apply_total_return(
             high=bar.high,
             low=bar.low,
             close=bar.close,
-            signal_close=bar.close,
+            signal_close=bar.signal_level if bar.signal_level is not None else bar.close,
             volume=bar.volume,
             dividend=bar.dividend or ZERO,
+            pay_date=bar.pay_date,
         )
         for bar in bars
     ]

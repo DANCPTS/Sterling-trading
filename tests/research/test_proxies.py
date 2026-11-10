@@ -99,7 +99,7 @@ def test_two_point_band_skips_drift_and_allows_a_real_exit() -> None:
     assert exit_book.weight_map() == {"CASH": Decimal("1")}
 
 
-def test_dividend_is_reinvested_on_its_own_session() -> None:
+def test_accrual_index_counts_the_dividend_on_the_ex_date() -> None:
     levels = distribution_total_return(
         (
             (date(2024, 8, 20), Decimal("100"), Decimal("0")),
