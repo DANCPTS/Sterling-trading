@@ -6,6 +6,10 @@ proposal before any later price exists. Fills, when a paper book uses an
 accepted weight, are the next session open. A proposal is not scored on a
 price at or before its log timestamp.
 
+The snapshot can also carry point-in-time features for those six names only: 1w/1m/3m/6m/12m returns, distance from the 10-month average, 63-session realised volatility, current and 252-session max drawdown, equal-weight and 60/40 (30/30/20/20 VWRP/CUKX/IGLT/AGBP) returns, a SONIA print only after its publication time, and recent distributions. Each feature has its own as-of time and the publication times it used. The prompt stores a hash of those times, not the full list. `estimate_tokens` records a 4-bytes-per-token size estimate on the log. It is not a model invoice.
+
+A run below the pre-registered sample is labelled `technical pilot, not evidence of profitability`. The thresholds themselves are unchanged.
+
 The pre-registration lives in `sterling.research.grok.preregistration`.
 Weekly decisions, the research cost model, and this universe: VWRP, CUKX,
 IGLT, AGBP, SGLN, XSTR. FX majors are optional and use the frozen carry rule

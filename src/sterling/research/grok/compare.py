@@ -20,6 +20,7 @@ from sterling.research.costs import affordable_buy, quote_trade, research_cost_m
 from sterling.research.errors import ResearchError
 from sterling.research.fx.grok_forward import ForwardProposal, ProposalLog, prompt_hash
 from sterling.research.fx.strategies import Carry, FxView
+from sterling.research.grok.context import PriceObservation, build_market_context
 from sterling.research.grok.preregistration import (
     APPROVED_UNIVERSE,
     BLOCK_WEEKS,
@@ -30,6 +31,7 @@ from sterling.research.grok.preregistration import (
     WEEKS_PER_YEAR,
     PreRegistration,
     may_conclude,
+    phase_label,
 )
 from sterling.research.grok.providers import MockGrokProvider, ScriptStep
 from sterling.research.grok.schema import AccountView, InstrumentQuote, MarketSnapshot, PaperPosition
@@ -312,7 +314,7 @@ def run_comparison(
         receipt = observed + timedelta(seconds=1)
         grok_book = books["grok"]
         nav = grok_book.value(closes)
-        snapshot = _snapshot(observed, closes, grok_book, nav)
+        snapshot = _snapshot(observed, closes, grok_book, nav, history)
         decision = session.decide(snapshot, received_at=receipt, account=OPERATIONAL_ACCOUNT, paper_nav_gbp=nav)
         if decision.execution_permission != EXECUTION_PERMISSION or decision.orders_submitted != ORDERS_SUBMITTED:
             raise ResearchError("comparison refused a decision that was not execution DENY")
@@ -555,18 +557,34 @@ def _body(proposals: Sequence[Mapping[str, object]]) -> str:
     return json.dumps({"model_id": "mock-grok", "proposals": proposals}, sort_keys=True)
 
 
-def _snapshot(observed: datetime, closes: Mapping[str, Decimal], book: _Book, nav: Decimal) -> MarketSnapshot:
+def _snapshot(
+    observed: datetime,
+    closes: Mapping[str, Decimal],
+    book: _Book,
+    nav: Decimal,
+    history: Mapping[str, tuple[tuple[date, Decimal], ...]],
+) -> MarketSnapshot:
     positions = tuple(
         PaperPosition(ticker, lot.quantity, lot.quantity * closes[ticker])
         for ticker, lot in sorted(book.lots.items())
         if lot.quantity > 0
     )
+    observations = [
+        PriceObservation(ticker, session, price, session_close_utc(session), "synthetic-close")
+        for ticker, series in history.items()
+        for session, price in series
+        if session_close_utc(session) <= observed
+    ]
+    context = build_market_context(as_of=observed, observations=observations)
     return MarketSnapshot(
         as_of=observed,
         quotes=tuple(InstrumentQuote(ticker, price, observed, "synthetic-close") for ticker, price in sorted(closes.items())),
         positions=positions,
         nav_gbp=nav,
         universe=APPROVED_UNIVERSE,
+        features=context.features,
+        distributions=context.distributions,
+        cash_rate=context.cash_rate,
     )
 
 
@@ -762,6 +780,7 @@ def _render(
 ) -> str:
     lines = [
         "Synthetic forward skeleton. Not a performance record and not permission to trade.",
+        f"phase={phase_label(weeks=weeks, months=months, closed_round_trips=closed)}",
         f"registration={registration.registration_id} digest={registration.digest()}",
         f"execution_permission={EXECUTION_PERMISSION} orders_submitted={ORDERS_SUBMITTED}",
         "per_trade_planned_risk_cap_gbp=2.50 daily_loss_cap_gbp=5.00 allowlist_empty=true",

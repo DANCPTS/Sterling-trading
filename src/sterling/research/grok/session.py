@@ -24,6 +24,7 @@ from sterling.research.grok.schema import (
     ParseOk,
     account_payload,
     as_mapping,
+    estimate_tokens,
     instrument_payload,
     parse_response,
     prompt_for,
@@ -160,7 +161,7 @@ class ForwardSession:
         digest = snapshot_hash(prices)
         prompt = prompt_for(snapshot)
         prompt_digest = prompt_hash(prompt)
-        self._snapshot(snapshot, digest, prices)
+        self._snapshot(snapshot, digest, prices, token_estimate=estimate_tokens(prompt))
         price_times = tuple(quote.observed_at for quote in snapshot.quotes)
         deadline = snapshot.as_of + self.response_timeout
         if receipt > deadline:
@@ -263,6 +264,7 @@ class ForwardSession:
         snapshot: MarketSnapshot,
         digest: str,
         prices: Mapping[str, tuple[tuple[datetime, Decimal], ...]],
+        token_estimate: int,
     ) -> None:
         self.log.append_event(
             timestamp_utc=snapshot.as_of,
@@ -270,6 +272,7 @@ class ForwardSession:
             fields={
                 "inputs_snapshot_hash": digest,
                 "nav_gbp": format(snapshot.nav_gbp, "f"),
+                "prompt_token_estimate": token_estimate,
                 "positions": [
                     {
                         "instrument_id": position.instrument_id,

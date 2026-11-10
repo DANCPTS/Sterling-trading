@@ -24,6 +24,7 @@ BOOTSTRAP_REPLICATIONS = 2000
 BOOTSTRAP_SEED = 20261110
 CONFIDENCE_LEVEL = Decimal("0.95")
 WEEKS_PER_YEAR = Decimal(52)
+PILOT_LABEL = "technical pilot, not evidence of profitability"
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +98,13 @@ class PreRegistration:
     def digest(self) -> str:
         text = json.dumps(self.as_log_fields(), sort_keys=True, separators=(",", ":"), ensure_ascii=True)
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def phase_label(*, weeks: int, months: int, closed_round_trips: int) -> str:
+    """Pilot outputs stay descriptive. The registration thresholds are not lowered."""
+    if weeks < MIN_WEEKLY_DECISIONS or months < MIN_CALENDAR_MONTHS or closed_round_trips < MIN_CLOSED_ROUND_TRIPS:
+        return PILOT_LABEL
+    return "pre-registered window"
 
 
 def may_conclude(

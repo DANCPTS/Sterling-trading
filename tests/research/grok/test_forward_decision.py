@@ -15,7 +15,16 @@ from sterling.decision_boundary import RESEARCH_NAMES, admit_grok_payload, combi
 from sterling.placeholders.broker import BrokerAdapter
 from sterling.research.errors import ResearchError, ResearchIsolationError
 from sterling.research.fx.grok_forward import ProposalLog, score_proposal
-from sterling.research.grok.preregistration import APPROVED_UNIVERSE, may_conclude
+from sterling.research.grok.preregistration import (
+    APPROVED_UNIVERSE,
+    MIN_CALENDAR_MONTHS,
+    MIN_CLOSED_ROUND_TRIPS,
+    MIN_WEEKLY_DECISIONS,
+    PILOT_LABEL,
+    PreRegistration,
+    may_conclude,
+    phase_label,
+)
 from sterling.research.grok.providers import MockGrokProvider, ScriptStep, XaiGrokProvider
 from sterling.research.grok.safety import POLICY_FILE_SHA256, RULES_FILE_SHA256, pinned_review
 from sterling.research.grok.schema import AccountView, InstrumentQuote, MarketSnapshot, PaperPosition
@@ -139,6 +148,7 @@ def test_valid_weight_is_not_resized_to_the_risk_cap(tmp_path: Path) -> None:
     assert decision.allowlist_permitted is False
     assert decision.per_trade_cap_gbp == "2.50"
     assert decision.daily_loss_cap_gbp == "5.00"
+    assert "prompt_token_estimate" in log.path.read_text(encoding="utf-8")
     assert log.verify() >= 3
     before = (as_of - timedelta(days=1), Decimal("1"))
     at_stamp = (decision.proposal_logged_at, Decimal("50"))
@@ -443,10 +453,19 @@ def _payload() -> dict[str, object]:
 
 
 def test_conclusion_rule() -> None:
-    assert (
-        may_conclude(weeks=104, months=24, closed_round_trips=30, interval_low=Decimal("0.01"), interval_high=Decimal("0.02"))
-        is True
-    )
+    assert MIN_WEEKLY_DECISIONS == 104
+    assert MIN_CALENDAR_MONTHS == 24
+    assert MIN_CLOSED_ROUND_TRIPS == 30
+    registration = PreRegistration()
+    assert registration.min_weekly_decisions == 104
+    assert registration.min_calendar_months == 24
+    assert registration.min_closed_round_trips == 30
+    assert registration.digest() == "cba47f3e671a601d87b8707174fec1f7f3c4cc9f94481a7081ef9c47bb131121"
+    above = dict(weeks=104, months=24, closed_round_trips=30, interval_low=Decimal("0.01"), interval_high=Decimal("0.02"))
+    assert may_conclude(**above) is True
+    assert may_conclude(**{**above, "closed_round_trips": 29}) is False
+    assert may_conclude(**{**above, "weeks": 103}) is False
+    assert may_conclude(**{**above, "months": 23}) is False
     assert (
         may_conclude(weeks=10, months=24, closed_round_trips=30, interval_low=Decimal("0.01"), interval_high=Decimal("0.02"))
         is False
@@ -455,3 +474,6 @@ def test_conclusion_rule() -> None:
         may_conclude(weeks=104, months=24, closed_round_trips=30, interval_low=Decimal("-0.01"), interval_high=Decimal("0.02"))
         is False
     )
+    assert phase_label(weeks=104, months=24, closed_round_trips=29) == PILOT_LABEL
+    assert phase_label(weeks=10, months=2, closed_round_trips=1) == PILOT_LABEL
+    assert phase_label(weeks=104, months=24, closed_round_trips=30) == "pre-registered window"

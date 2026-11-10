@@ -70,6 +70,7 @@ def test_fills_use_the_next_open_and_the_conclusion_is_withheld(tmp_path: Path) 
     )
     assert report.conclusion is False
     assert "conclusion=withheld" in report.text
+    assert "technical pilot, not evidence of profitability" in report.text
     assert "execution_permission=NOT_ISSUED" in report.text
     assert "orders_submitted=0" in report.text
     assert report.blocked_grok_decisions >= 0
@@ -102,6 +103,7 @@ def test_mock_script_is_offline_and_prints_the_table(tmp_path: Path) -> None:
     assert module.main(["--output", str(tmp_path)]) == 0
     report = (tmp_path / "report.txt").read_text(encoding="utf-8")
     assert "conclusion=withheld" in report
+    assert "technical pilot, not evidence of profitability" in report
     assert "NOT_ISSUED" in report
     assert "grok " in report
     assert "etf_trend" in report

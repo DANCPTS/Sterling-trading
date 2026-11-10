@@ -6,10 +6,11 @@ as-of time are rejected. Reasoning text is stored as text and is not executed.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
@@ -81,6 +82,39 @@ class PaperPosition:
 
 
 @dataclass(frozen=True, slots=True)
+class MarketFeature:
+    """One point-in-time measure. ``sources`` are publication times, not sessions."""
+
+    name: str
+    value: Decimal | None
+    as_of: datetime
+    sources: tuple[datetime, ...]
+    instrument_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DistributionNote:
+    instrument_id: str
+    ex_date: date
+    pay_date: date | None
+    amount: Decimal
+    published_at: datetime
+    source: str
+
+
+@dataclass(frozen=True, slots=True)
+class CashRate:
+    """A GBP cash rate that was already published at ``as_of``."""
+
+    series_id: str
+    annual_rate: Decimal
+    observed_on: date
+    published_at: datetime
+    as_of: datetime
+    source: str
+
+
+@dataclass(frozen=True, slots=True)
 class MarketSnapshot:
     """Prices and positions available at ``as_of``. Positions are a read-only tuple."""
 
@@ -89,6 +123,9 @@ class MarketSnapshot:
     positions: tuple[PaperPosition, ...]
     nav_gbp: Decimal
     universe: tuple[str, ...]
+    features: tuple[MarketFeature, ...] = ()
+    distributions: tuple[DistributionNote, ...] = ()
+    cash_rate: CashRate | None = None
 
     def __post_init__(self) -> None:
         require_utc(self.as_of)
@@ -123,6 +160,30 @@ class MarketSnapshot:
             held_value += position.market_value_gbp
         if held_value - self.nav_gbp > Decimal("0.01"):
             raise ResearchError("snapshot positions exceed NAV")
+        seen_features: set[str] = set()
+        for feature in self.features:
+            if feature.name in seen_features:
+                raise ResearchError("duplicate snapshot feature")
+            seen_features.add(feature.name)
+            if require_utc(feature.as_of) != require_utc(self.as_of):
+                raise ResearchError("feature as-of does not match the snapshot")
+            if feature.instrument_id is not None and feature.instrument_id not in self.universe:
+                raise ResearchError("feature instrument is outside the universe")
+            for published in feature.sources:
+                if require_utc(published) > self.as_of:
+                    raise ResearchError("feature uses a source published after the as-of time")
+        for note in self.distributions:
+            if note.instrument_id not in self.universe:
+                raise ResearchError("distribution is outside the universe")
+            if require_utc(note.published_at) > self.as_of:
+                raise ResearchError("distribution was published after the as-of time")
+            if note.amount < 0:
+                raise ResearchError("distribution amount cannot be negative")
+        if self.cash_rate is not None:
+            if require_utc(self.cash_rate.as_of) != require_utc(self.as_of):
+                raise ResearchError("cash rate as-of does not match the snapshot")
+            if require_utc(self.cash_rate.published_at) > self.as_of:
+                raise ResearchError("cash rate was published after the as-of time")
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,8 +246,50 @@ def prompt_for(snapshot: MarketSnapshot) -> str:
             for quote in sorted(snapshot.quotes, key=lambda item: item.instrument_id)
         ],
         "universe": list(snapshot.universe),
+        "features": [_feature_row(feature) for feature in sorted(snapshot.features, key=lambda item: item.name)],
+        "distributions": [
+            {
+                "amount": format(note.amount, "f"),
+                "ex_date": note.ex_date.isoformat(),
+                "instrument_id": note.instrument_id,
+                "pay_date": None if note.pay_date is None else note.pay_date.isoformat(),
+                "published_at": require_utc(note.published_at).isoformat(),
+                "source": note.source,
+            }
+            for note in sorted(snapshot.distributions, key=lambda item: (item.instrument_id, item.ex_date, item.published_at))
+        ],
+        "cash_rate": None
+        if snapshot.cash_rate is None
+        else {
+            "annual_rate": format(snapshot.cash_rate.annual_rate, "f"),
+            "as_of": require_utc(snapshot.cash_rate.as_of).isoformat(),
+            "observed_on": snapshot.cash_rate.observed_on.isoformat(),
+            "published_at": require_utc(snapshot.cash_rate.published_at).isoformat(),
+            "series_id": snapshot.cash_rate.series_id,
+            "source": snapshot.cash_rate.source,
+        },
     }
     return canonical(document)
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough prompt size: one token per four UTF-8 bytes. Not a provider invoice."""
+    size = len(text.encode("utf-8"))
+    return max(1, (size + 3) // 4)
+
+
+def _feature_row(feature: MarketFeature) -> dict[str, object]:
+    joined = "\n".join(require_utc(moment).isoformat() for moment in feature.sources)
+    return {
+        "as_of": require_utc(feature.as_of).isoformat(),
+        "instrument_id": feature.instrument_id,
+        "name": feature.name,
+        "source_count": len(feature.sources),
+        "sources_from": None if not feature.sources else require_utc(min(feature.sources)).isoformat(),
+        "sources_hash": hashlib.sha256(joined.encode("utf-8")).hexdigest(),
+        "sources_to": None if not feature.sources else require_utc(max(feature.sources)).isoformat(),
+        "value": None if feature.value is None else format(feature.value, "f"),
+    }
 
 
 def prompt_digest(snapshot: MarketSnapshot) -> str:
