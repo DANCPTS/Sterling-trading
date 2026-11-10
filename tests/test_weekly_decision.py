@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -41,11 +41,57 @@ def test_demo_healthcheck_and_no_network(tmp_path: Path, monkeypatch: pytest.Mon
     assert module.main(["--healthcheck", "--log", str(tmp_path / "missing.jsonl")]) == 1
 
 
+def test_one_source_holds_and_two_sources_can_trade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = _script()
+    monkeypatch.setattr(module.urllib.request, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("network")))
+    day = datetime.now(UTC).date() - timedelta(days=1)
+    while day.weekday() >= 5:
+        day -= timedelta(days=1)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    for ticker in ("VWRP", "CUKX", "IGLT", "AGBP", "SGLN", "XSTR"):
+        (cache / f"{ticker}.csv").write_text(f"date,close,quoted_in\n{day.isoformat()},100,GBP\n", encoding="utf-8")
+    held = tmp_path / "held.jsonl"
+    assert module.main(["--log", str(held), "--cache", str(cache), "--provider", "mock"]) == 0
+    held_text = held.read_text(encoding="utf-8")
+    assert "missing_or_not_cross_checked" in held_text
+    assert "provider_calls=0" in capsys.readouterr().out
+    assert '"gate":"hold"' in held_text
+    before = held_text.count("week_reserve")
+    assert module.main(["--log", str(held), "--cache", str(cache), "--provider", "mock"]) == 0
+    assert held.read_text(encoding="utf-8").count("week_reserve") == before
+    assert "status=noop" in capsys.readouterr().out
+
+    for ticker, close, unit in (
+        ("VWRP", "100", "GBP"),
+        ("CUKX", "10000", "GBp"),
+        ("IGLT", "100", "GBP"),
+        ("AGBP", "100", "GBP"),
+        ("SGLN", "10000", "GBp"),
+        ("XSTR", "10000", "GBp"),
+    ):
+        (cache / f"{ticker}.check.csv").write_text(
+            f"date,close,quoted_in\n{day.isoformat()},{close if unit == 'GBP' else '100'},GBP\n",
+            encoding="utf-8",
+        )
+        (cache / f"{ticker}.csv").write_text(
+            f"date,close,quoted_in\n{day.isoformat()},{close},{unit}\n",
+            encoding="utf-8",
+        )
+    traded = tmp_path / "traded.jsonl"
+    assert module.main(["--log", str(traded), "--cache", str(cache), "--provider", "mock"]) == 0
+    text = traded.read_text(encoding="utf-8")
+    assert '"gate":"accepted"' in text or '"gate":"hold"' in text
+    assert "mode" in text and "forward" in text
+
+
 def test_rejected_xai_payload_is_logged_and_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(ENV_KEY, "xai-test-key-not-real")
     module = _script()
     monkeypatch.setattr(module.urllib.request, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("network")))
-    snapshot = module.build_snapshot(
+    snapshot, _holds, _prints = module.build_snapshot(
         as_of=datetime(2024, 6, 7, 16, 30, tzinfo=UTC),
         cache=None,
         fetch_free=False,

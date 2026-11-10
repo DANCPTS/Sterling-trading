@@ -18,6 +18,7 @@ from sterling.xai_client import (
     ENV_KEY,
     HttpResponse,
     HttpsTransport,
+    NotSent,
     XaiClient,
     XaiDisabled,
     XaiDryRun,
@@ -98,8 +99,9 @@ def test_retries_timeout_malformed_oversized_and_redaction(monkeypatch: pytest.M
     monkeypatch.setenv(ENV_KEY, KEY)
     sleeps: list[float] = []
     fake = _Fake([HttpResponse(status=429, body=f"slow {KEY}".encode()), _ok('{"model_id":"grok-4.3","proposals":[]}')])
-    content, usage = _client(fake, sleeper=lambda delay: sleeps.append(delay)).complete("hello")
+    content, usage = _client(fake, sleeper=lambda delay: sleeps.append(delay), max_calls=2).complete("hello")
     assert sleeps == [0.5]
+    assert _client(fake, max_calls=2).calls_sent == 0 or usage.http_status == 200
     assert usage.http_status == 200
     assert usage.input_tokens == 20
     assert KEY not in json.dumps(usage.as_log())
@@ -109,9 +111,11 @@ def test_retries_timeout_malformed_oversized_and_redaction(monkeypatch: pytest.M
 
     denied = _Fake([HttpResponse(status=500, body=KEY.encode())] * 3)
     with pytest.raises(XaiError, match="HTTP 500") as caught:
-        _client(denied, sleeper=lambda delay: sleeps.append(delay)).complete("hello")
+        client = _client(denied, sleeper=lambda delay: sleeps.append(delay), max_calls=3)
+        client.complete("hello")
     assert KEY not in str(caught.value)
-    assert len(denied.calls) == 3
+    assert len(denied.calls) == 1
+    assert client.calls_sent == 1
     assert caught.value.usage is not None
     assert caught.value.usage.http_status == 500
 
@@ -187,7 +191,28 @@ def test_ceilings_call_cap_and_transport_timeouts(monkeypatch: pytest.MonkeyPatc
     assert header["Authorization"] == f"Bearer {KEY}"
     body = json.loads(fake.calls[0]["body"])  # type: ignore[arg-type]
     assert body["reasoning_effort"] == "low"
+    assert body["max_completion_tokens"] == 1500
     assert "tools" not in body
+    refused = _Fake(error=NotSent("refused"))
+    refused.responses = [_ok("{}")]
+    # Connection refused is not a sent request, so one retry is allowed inside the cap.
+    calls = {"n": 0}
+
+    def _post(**kwargs: object) -> HttpResponse:
+        del kwargs
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise NotSent("refused")
+        return _ok("{}")
+
+    class _Retry:
+        def post(self, **kwargs: object) -> HttpResponse:
+            return _post(**kwargs)
+
+    retried = _client(_Retry(), max_calls=1, sleeper=lambda _delay: None)  # type: ignore[arg-type]
+    retried.complete("hello")
+    assert calls["n"] == 2
+    assert retried.calls_sent == 1
 
     made: list[object] = []
 

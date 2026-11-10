@@ -29,13 +29,29 @@ and it does not submit an order.
 
 ```bash
 python scripts/run_mock_forward_test.py --output research-output/mock-forward
-python scripts/run_weekly_decision.py --demo-offline --log research-output/forward.jsonl
+python scripts/run_weekly_decision.py --demo-offline --as-of 2024-06-07T16:30:00+00:00 --log research-output/forward.jsonl
 python scripts/run_weekly_decision.py --healthcheck --log research-output/forward.jsonl
 ```
 
-The weekly entrypoint uses the mock provider unless `--provider xai --enable-xai` is set and `XAI_API_KEY` is present. `--dry-run` builds the xAI request and does not send it. `--fetch-free` downloads only the Bank of England SONIA file. There is no scheduled workflow. A commented example sits in `docs/examples/weekly-decision.workflow.yml`.
+The weekly entrypoint uses the mock provider unless `--provider xai --enable-xai` is set and `XAI_API_KEY` is present. `--dry-run` builds the xAI request and does not send it. There is no scheduled workflow in this public repo. A commented example sits in `docs/examples/weekly-decision.workflow.yml`. A disabled private-runner template is in `deploy/private-runner/` and does not run from here.
 
 That run is synthetic and offline. It is not evidence of an edge.
+
+## Clocks
+
+`forward` reads `datetime.now(UTC)` for the decision, the request, and the response. `recorded_at` is the time the line is written. `historical` and `demo` must name `--as-of`, and that date must not be the date the line is written. `simulated_clock` is an injected clock and the log says so. The verifier rejects a mixture of modes, a response before the request, and a forward decision in the future. Tests inject `TickingClock`. A live run does not.
+
+## Paper book
+
+Cash, positions, costs, receivables, the transaction list, and NAV are replayed from the hash-chained log. `*.state.json` is a cache. Each `state_commit` stores the hash of that replay. One ISO week gets one reserve. A second process in the same week does not call the provider and does not trade. The reserve is written before the call, so a crash does not leave a second billable attempt. Fills use the next session's price, on a later run. A missing scheduled week is a `missed_week` record, not a backfill.
+
+## Free prices
+
+VWRP, CUKX, IGLT, AGBP, SGLN, and XSTR can be read from Yahoo chart JSON and Stooq CSV through an injected getter. Tests never pass a live getter. Yahoo `meta.currency` of `GBp` is divided by the universe divisor (100 for CUKX, SGLN, and XSTR). A print with no timestamp is dropped. Stooq's currency is unverified until `stooq-units.csv` names `GBP` or `GBp`. One source, a print older than the configured session window (default 5), or a disagreement above 2% is HOLD for that name. The old price is not written back as a fresh quote. Yahoo chart bytes are not redistributable and are not written into this repo. A split or consolidation scales prints published before the action; distribution ex and pay dates stay on the existing research calendar.
+
+## What is a ceiling and what the provider enforces
+
+The local token and dollar figures are a pre-send estimate (`estimate_tokens`, and the high `$5` / `$25` per million placeholders). They are not an invoice. The request sends `max_completion_tokens`, which caps visible output only. Reasoning tokens are billed separately and are not inside that cap; `reasoning_effort` is `low`. A 429 may be retried only while the per-run cap still has room, and each sent request counts. A connection refused before the request is sent may be retried and does not count. A read timeout or a 5xx after the request was sent is not retried. Prompt, completion, reasoning, cached tokens, and `cost_in_usd_ticks` are stored when the response includes them, including on errors. A prepaid balance and a `$0` invoiced limit are account settings. This repo cannot turn them on. See `deploy/private-runner/SETUP.md`.
 
 ## Snapshot the live trial needs
 

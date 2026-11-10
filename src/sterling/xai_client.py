@@ -23,7 +23,11 @@ API_PATH = "/v1/chat/completions"
 API_URL = "https://api.x.ai/v1/chat/completions"
 DEFAULT_MODEL = "grok-4.3"
 ENV_KEY = "XAI_API_KEY"
-RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+# A 429 is the only HTTP status that may be retried, and only while the
+# per-run cap still has room. 5xx and read timeouts are not retried: the
+# request may already have been billed. Connection refusal before the
+# request is sent may be retried and is not counted as a sent request.
+RETRY_STATUSES = frozenset({429})
 MAX_CONTENT_CHARS = 20000
 INPUT_USD_PER_MILLION = Decimal("5")
 OUTPUT_USD_PER_MILLION = Decimal("25")
@@ -81,7 +85,11 @@ class XaiRefused(XaiError):
 
 
 class XaiTimeout(XaiError):
-    """The connection or the read timed out. Timeouts are not retried."""
+    """A read or connect timeout after the request may have been sent. Not retried."""
+
+
+class NotSent(Exception):
+    """The connection was refused before the request bytes were written."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,18 +105,27 @@ class UsageRecord:
     input_tokens: int | None
     output_tokens: int | None
     reasoning_tokens: int | None
+    cached_tokens: int | None
     cost_in_usd_ticks: int | None
     latency_ms: int
     http_status: int
+    local_estimate_note: str = "pre-send local ceiling, not an xAI invoice"
+    provider_limit_note: str = (
+        "max_completion_tokens caps visible output only. Reasoning tokens are billed separately "
+        "and are not inside that cap. A prepaid balance and a $0 invoiced limit are account settings."
+    )
 
     def as_log(self) -> dict[str, object]:
         return {
+            "cached_tokens": self.cached_tokens,
             "cost_in_usd_ticks": self.cost_in_usd_ticks,
             "http_status": self.http_status,
             "input_tokens": self.input_tokens,
             "latency_ms": self.latency_ms,
+            "local_estimate_note": self.local_estimate_note,
             "model": self.model,
             "output_tokens": self.output_tokens,
+            "provider_limit_note": self.provider_limit_note,
             "reasoning_tokens": self.reasoning_tokens,
             "request_hash": self.request_hash,
         }
@@ -145,7 +162,10 @@ class HttpsTransport:
             raise XaiError("xAI client only posts to its configured https endpoint. No request was sent.")
         connection = self._factory(API_HOST, timeout=connect_timeout)
         try:
-            connection.connect()
+            try:
+                connection.connect()
+            except ConnectionRefusedError as exc:
+                raise NotSent("connection refused before send") from exc
             sock = getattr(connection, "sock", None)
             if sock is not None:
                 sock.settimeout(read_timeout)
@@ -207,6 +227,7 @@ class XaiClient:
                 },
                 {"content": prompt, "role": "user"},
             ],
+            "max_completion_tokens": self.output_token_budget,
             "model": self.model,
             "reasoning_effort": "low",
             "response_format": {
@@ -238,7 +259,6 @@ class XaiClient:
             raise XaiRefused("estimated cost exceeds the per-run ceiling. No request was sent.")
         if self.dry_run:
             raise XaiDryRun("dry_run: request built and not sent.")
-        self.calls_sent += 1
         request_hash = hashlib.sha256(encoded).hexdigest()
         headers = {
             "Authorization": f"Bearer {key}",
@@ -251,6 +271,7 @@ class XaiClient:
         return _parse_success(response, key=key, request_hash=request_hash, model=self.model, latency_ms=latency_ms)
 
     def _send(self, body: bytes, headers: Mapping[str, str], key: str) -> HttpResponse:
+        """Send once per billed attempt. Do not retry after the bytes may have left."""
         delay = 0.5
         last: HttpResponse | None = None
         for attempt in range(self.max_attempts):
@@ -262,13 +283,17 @@ class XaiClient:
                     connect_timeout=self.connect_timeout,
                     read_timeout=self.read_timeout,
                 )
-            except XaiTimeout:
-                raise
-            except TimeoutError as exc:
-                raise XaiTimeout(_redact("xAI request timed out. No proposal was accepted.", key)) from exc
-            except OSError as exc:
-                raise XaiError(_redact(f"xAI transport failed ({type(exc).__name__}).", key)) from None
-            if last.status in RETRY_STATUSES and attempt + 1 < self.max_attempts:
+            except NotSent:
+                if attempt + 1 < self.max_attempts and self.calls_sent < self.max_calls:
+                    self._sleep(delay)
+                    delay *= 2
+                    continue
+                raise XaiError("xAI connection was refused before the request was sent.") from None
+            except (XaiTimeout, TimeoutError) as exc:
+                self.calls_sent += 1
+                raise XaiTimeout(_redact("xAI read timed out after send. Not retried.", key)) from exc
+            self.calls_sent += 1
+            if last.status in RETRY_STATUSES and self.calls_sent < self.max_calls and attempt + 1 < self.max_attempts:
                 self._sleep(delay)
                 delay *= 2
                 continue
@@ -291,6 +316,7 @@ def _parse_success(response: HttpResponse, *, key: str, request_hash: str, model
         input_tokens=None,
         output_tokens=None,
         reasoning_tokens=None,
+        cached_tokens=None,
         cost_in_usd_ticks=None,
         latency_ms=latency_ms,
         http_status=response.status,
@@ -311,6 +337,7 @@ def _parse_success(response: HttpResponse, *, key: str, request_hash: str, model
             input_tokens=_int_field(raw_usage.get("prompt_tokens")),
             output_tokens=_int_field(raw_usage.get("completion_tokens")),
             reasoning_tokens=_reasoning_tokens(raw_usage),
+            cached_tokens=_cached_tokens(raw_usage),
             cost_in_usd_ticks=_cost_ticks(raw_usage),
             latency_ms=latency_ms,
             http_status=response.status,
@@ -325,6 +352,16 @@ def _parse_success(response: HttpResponse, *, key: str, request_hash: str, model
     if len(content) > MAX_CONTENT_CHARS:
         raise XaiError("xAI response exceeded the size cap.", usage)
     return content, usage
+
+
+def _cached_tokens(usage: Mapping[str, object]) -> int | None:
+    direct = _int_field(usage.get("cached_tokens"))
+    if direct is not None:
+        return direct
+    details = usage.get("prompt_tokens_details")
+    if isinstance(details, dict):
+        return _int_field(details.get("cached_tokens"))
+    return None
 
 
 def _reasoning_tokens(usage: Mapping[str, object]) -> int | None:
