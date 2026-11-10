@@ -239,7 +239,7 @@ class ProposalLog:
         price_timestamps: Sequence[datetime] = (),
     ) -> None:
         """Append a snapshot, screen, or pre-registration record onto the same chain."""
-        if record_type not in {"snapshot", "screen", "preregistration"}:
+        if record_type not in {"snapshot", "screen", "preregistration", "model_usage"}:
             raise ResearchError("forward log event type is not allowed")
         stamped = require_utc(timestamp_utc)
         _reject_prices(stamped, price_timestamps, strict=record_type != "snapshot")

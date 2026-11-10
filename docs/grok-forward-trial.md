@@ -29,7 +29,11 @@ and it does not submit an order.
 
 ```bash
 python scripts/run_mock_forward_test.py --output research-output/mock-forward
+python scripts/run_weekly_decision.py --demo-offline --log research-output/forward.jsonl
+python scripts/run_weekly_decision.py --healthcheck --log research-output/forward.jsonl
 ```
+
+The weekly entrypoint uses the mock provider unless `--provider xai --enable-xai` is set and `XAI_API_KEY` is present. `--dry-run` builds the xAI request and does not send it. `--fetch-free` downloads only the Bank of England SONIA file. There is no scheduled workflow. A commented example sits in `docs/examples/weekly-decision.workflow.yml`.
 
 That run is synthetic and offline. It is not evidence of an edge.
 

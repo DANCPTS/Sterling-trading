@@ -203,6 +203,7 @@ benchmarks on the same sessions, with next-session fills. See
 
 ```bash
 python scripts/run_mock_forward_test.py --output research-output/mock-forward
+python scripts/run_weekly_decision.py --demo-offline --log research-output/forward.jsonl
 ```
 
 The xAI class does not send a request. Desk Rules, the £2.50 per-trade risk
