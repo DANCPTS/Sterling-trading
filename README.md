@@ -123,6 +123,8 @@ that only reduces equity, bond, or gold weights into XSTR or literal cash is
 not scaled by the 50% one-way turnover cap. A buy that increases those
 weights stays capped.
 
+A distributing line accrues a dividend receivable on the ex-date. That receivable is in NAV and is not cash and not a position. It becomes cash on the payment date, and it can be reinvested only on the next session, at that session's open and with dealing costs. XSTR uses the issuer pay dates. Any other explicit distribution with no pay date waits 15 XLON sessions. An adjusted-close total-return series already includes the distribution, so it is not accrued again.
+
 Signals use the month-end close. Fills use the next XLON session open.
 XLON is weekdays minus England and Wales bank holidays, including Easter and
 the proclaimed one-offs checked against GOV.UK. Costs can include commission, half the bid-ask spread,

@@ -33,6 +33,7 @@ class NavRow:
     gross_exposure: Decimal
     cash_weight: Decimal
     holdings: tuple[tuple[str, Decimal], ...] = ()
+    receivable_gbp: Decimal = ZERO
 
 
 @dataclass(frozen=True, slots=True)

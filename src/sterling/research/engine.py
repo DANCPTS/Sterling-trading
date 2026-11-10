@@ -11,13 +11,14 @@ deducted. ``deduct_ocf=True`` is refused.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
 from sterling.research.bars import Bar, PreparedSeries, prepare_series
 from sterling.research.calendar import WeekdayCalendar
 from sterling.research.costs import CostModel, TradeQuote, affordable_buy, quote_trade
+from sterling.research.distributions import payment_session, reinvest_session
 from sterling.research.errors import DataValidationError, ResearchError
 from sterling.research.instruments import Instrument
 from sterling.research.isolation import EXECUTION_PERMISSION, ORDERS_SUBMITTED, RESEARCH_MODE, assert_not_on_execution_path
@@ -74,9 +75,26 @@ class SimulationResult:
 
 
 @dataclass
+class _Entitlement:
+    """Dividend earned on the ex-date. Not cash and not a tradable holding."""
+
+    ticker: str
+    ex_date: date
+    amount: Decimal
+    pay_session: date
+    reinvest_session: date
+    settled: bool = False
+    reinvested: bool = False
+
+
+@dataclass
 class _Book:
     cash: Decimal
     quantity: dict[str, Decimal]
+    entitlements: list[_Entitlement] = field(default_factory=list)
+
+    def receivable(self) -> Decimal:
+        return sum((item.amount for item in self.entitlements if not item.settled), ZERO)
 
 
 def _material_change(
@@ -115,7 +133,7 @@ def _mark(book: _Book, prices: Mapping[str, Decimal]) -> tuple[Decimal, Decimal,
         (quantity * prices[ticker] for ticker, quantity in book.quantity.items() if quantity > 0),
         ZERO,
     )
-    nav = book.cash + market_value
+    nav = book.cash + market_value + book.receivable()
     if nav <= 0:
         raise ResearchError("NAV is not positive")
     weights = {ticker: quantity * prices[ticker] / nav for ticker, quantity in book.quantity.items() if quantity > 0}
@@ -226,14 +244,20 @@ def _rebalance(
     return fills, one_way
 
 
-def _dividends(
+def _distributions(
     book: _Book,
     prepared: Mapping[str, PreparedSeries],
     day: date,
     instruments: Mapping[str, Instrument],
     model: CostModel,
+    calendar: WeekdayCalendar,
+    opens: Mapping[str, Decimal],
 ) -> list[Fill]:
-    fills: list[Fill] = []
+    """Accrue on the ex-date, pay cash on the pay session, reinvest next session.
+
+    The receivable is not added to cash and is not a quantity the rebalance can
+    sell. Reinvestment spends only the cash that the payment created.
+    """
     for ticker, series in prepared.items():
         if series.dividend_mode == "ignore":
             continue
@@ -241,22 +265,54 @@ def _dividends(
         held = book.quantity.get(ticker, ZERO)
         if bar.dividend <= 0 or held <= 0:
             continue
+        if any(item.ticker == ticker and item.ex_date == day for item in book.entitlements):
+            continue
         income = quantize_money(held * bar.dividend)
         if income <= 0:
             continue
-        book.cash = quantize_money(book.cash + income)
-        if series.dividend_mode == "cash":
+        paid_on = payment_session(calendar, day, bar.pay_date)
+        book.entitlements.append(
+            _Entitlement(
+                ticker=ticker,
+                ex_date=day,
+                amount=income,
+                pay_session=paid_on,
+                reinvest_session=reinvest_session(calendar, paid_on),
+            )
+        )
+    for item in book.entitlements:
+        if item.settled or item.pay_session != day:
             continue
-        stamp = not instruments[ticker].stamp_duty_exempt
-        charge_fx = instruments[ticker].trading_currency != "GBP"
-        quote = affordable_buy(income, bar.close, model, stamp=stamp, charge_fx=charge_fx)
+        book.cash = quantize_money(book.cash + item.amount)
+        item.settled = True
+    fills: list[Fill] = []
+    for item in book.entitlements:
+        if item.reinvested or item.reinvest_session != day or not item.settled:
+            continue
+        item.reinvested = True
+        series = prepared[item.ticker]
+        if series.dividend_mode != "reinvest":
+            continue
+        spend = min(item.amount, book.cash)
+        if spend <= 0:
+            continue
+        instrument = instruments[item.ticker]
+        quote = affordable_buy(
+            spend,
+            opens[item.ticker],
+            model,
+            stamp=not instrument.stamp_duty_exempt,
+            charge_fx=instrument.trading_currency != "GBP",
+        )
         if quote.quantity == 0:
             continue
         book.cash = quantize_money(book.cash + quote.cash_delta_gbp)
         if book.cash < 0:
             raise ResearchError("distribution reinvestment would make cash negative")
-        book.quantity[ticker] = held + quote.quantity
-        fills.append(_fill_from_quote(quote, ticker=ticker, session=day, signal_date=None, cash_after=book.cash))
+        book.quantity[item.ticker] = book.quantity.get(item.ticker, ZERO) + quote.quantity
+        fills.append(
+            _fill_from_quote(quote, ticker=item.ticker, session=day, signal_date=None, cash_after=book.cash)
+        )
     return fills
 
 
@@ -300,6 +356,8 @@ def _run_path(
             continue
         opens = _prices(prepared, day, "open")
         day_model = cost_on(day) if cost_on is not None else model
+        dividend_fills = _distributions(book, prepared, day, instruments, day_model, calendar, opens)
+        fills.extend(dividend_fills)
         if static_weights is not None and not entered_static and day >= evaluate_start:
             static_fills, traded = _rebalance(
                 book, static_weights, opens, instruments, day_model, limits.min_trade_notional_gbp, day, None
@@ -315,8 +373,6 @@ def _run_path(
             fills.extend(traded_fills)
             total_turnover += traded
             pending = None
-        dividend_fills = _dividends(book, prepared, day, instruments, day_model)
-        fills.extend(dividend_fills)
         closes = _prices(prepared, day, "close")
         nav, gross, weights_now = _mark(book, closes)
         if gross > Decimal("1.00000001"):
@@ -328,7 +384,8 @@ def _run_path(
                 NavRow(
                     session=day,
                     cash_gbp=book.cash,
-                    market_value_gbp=quantize_money(nav - book.cash),
+                    market_value_gbp=quantize_money(nav - book.cash - book.receivable()),
+                    receivable_gbp=book.receivable(),
                     nav_gbp=quantize_money(nav),
                     gross_exposure=gross,
                     cash_weight=book.cash / nav,
