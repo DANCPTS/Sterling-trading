@@ -67,14 +67,10 @@ def test_usd_price_uses_dollars_per_pound_and_a_hedge_does_not() -> None:
 
 
 def test_rate_index_compounds_across_a_gap() -> None:
-    levels = compound_annual_percent(
-        ((date(2020, 1, 1), Decimal("0")), (date(2020, 1, 3), Decimal("0")))
-    )
+    levels = compound_annual_percent(((date(2020, 1, 1), Decimal("0")), (date(2020, 1, 3), Decimal("0"))))
     assert levels[0][1] == Decimal("1")
     assert levels[1][1] == Decimal("1")
-    grown = compound_annual_percent(
-        ((date(2020, 1, 1), Decimal("365.25")), (date(2020, 1, 2), Decimal("365.25")))
-    )
+    grown = compound_annual_percent(((date(2020, 1, 1), Decimal("365.25")), (date(2020, 1, 2), Decimal("365.25"))))
     # 365.25% over one day of a 365.25-day year is exactly +1%.
     assert grown[1][1] == Decimal("1.01")
 

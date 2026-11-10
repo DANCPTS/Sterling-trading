@@ -208,9 +208,7 @@ def _prepared_levels(path: Path) -> list[tuple[date, Decimal]]:
     # The dividend belongs on its own session. Using the previous bar's dividend
     # leaves a one-day hole the size of the distribution.
     if prepared.dividend_mode == "reinvest":
-        return list(
-            distribution_total_return([(bar.session, bar.close, bar.dividend) for bar in prepared.bars])
-        )
+        return list(distribution_total_return([(bar.session, bar.close, bar.dividend) for bar in prepared.bars]))
     return [(bar.session, bar.close) for bar in prepared.bars]
 
 
@@ -387,14 +385,17 @@ def _run(
 
 
 def _balanced(bars: Mapping[str, tuple[Bar, ...]]) -> tuple[tuple[NavRow, ...], Performance, Decimal]:
-    instruments = {name: _sleeve(name, asset) for name, asset in (
-        ("GLOBAL", "equity"),
-        ("UK", "equity"),
-        ("GILT", "bond"),
-        ("GAGG", "bond"),
-        ("GOLD", "commodity"),
-        ("CASH", "cash_proxy"),
-    )}
+    instruments = {
+        name: _sleeve(name, asset)
+        for name, asset in (
+            ("GLOBAL", "equity"),
+            ("UK", "equity"),
+            ("GILT", "bond"),
+            ("GAGG", "bond"),
+            ("GOLD", "commodity"),
+            ("CASH", "cash_proxy"),
+        )
+    }
     prepared = {
         name: prepare_series(
             ticker=name,

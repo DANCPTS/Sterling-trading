@@ -3,8 +3,9 @@
 The log is created empty of proposals. This module does not call a model, does
 not open a socket, and does not manufacture a historical track record. A
 proposal timestamped before the log was created, or not strictly after the
-previous record, is rejected. The scorer reads only prices strictly after the
-proposal timestamp.
+previous record, is rejected. Snapshots, screen results, and the
+pre-registration share that chain. The scorer reads only prices strictly after
+the proposal timestamp.
 """
 
 from __future__ import annotations
@@ -85,9 +86,36 @@ class ForwardProposal:
 
 def assert_inputs_before(proposal: ForwardProposal, price_timestamps: Sequence[datetime]) -> None:
     """Frozen-before-outcome: every input price is strictly earlier than the proposal."""
+    _reject_prices(proposal.timestamp_utc, price_timestamps, strict=True)
+
+
+def _reject_prices(moment: datetime, price_timestamps: Sequence[datetime], *, strict: bool) -> None:
+    stamped = require_utc(moment)
     for timestamp in price_timestamps:
-        if require_utc(timestamp) >= require_utc(proposal.timestamp_utc):
+        observed = require_utc(timestamp)
+        if strict and observed >= stamped:
             raise ResearchError("proposal inputs include a price that is not strictly before the proposal")
+        if not strict and observed > stamped:
+            raise ResearchError("snapshot includes a price after its timestamp")
+
+
+def _json_safe(value: object, label: str) -> object:
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, bool) or isinstance(value, float):
+        raise ResearchError(f"{label} must not be a bool or a float")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, list):
+        return [_json_safe(item, label) for item in value]
+    if isinstance(value, dict):
+        safe: dict[str, object] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ResearchError(f"{label} keys must be strings")
+            safe[key] = _json_safe(item, label)
+        return safe
+    raise ResearchError(f"{label} is not a loggable value")
 
 
 def _seal(body: dict[str, object], previous: str) -> dict[str, object]:
@@ -162,11 +190,9 @@ class ProposalLog:
             raise ResearchError("forward log is missing its creation record")
         return len(rows)
 
-    def append_proposal(self, proposal: ForwardProposal, *, price_timestamps: Sequence[datetime]) -> None:
-        assert_inputs_before(proposal, price_timestamps)
+    def _previous_hash(self, stamped: datetime) -> str:
         self.verify()
         created = self.created_at()
-        stamped = require_utc(proposal.timestamp_utc)
         if stamped < created:
             raise ResearchError("proposal is timestamped before the log was created")
         previous_row = self.records()[-1]
@@ -176,7 +202,20 @@ class ProposalLog:
         previous_hash = previous_row.get("record_hash")
         if not isinstance(previous_hash, str):
             raise ResearchError("previous log hash is missing")
-        record = _seal(
+        return previous_hash
+
+    def _write(self, body: dict[str, object], previous_hash: str) -> None:
+        record = _seal(body, previous_hash)
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(canonical(record) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    def append_proposal(self, proposal: ForwardProposal, *, price_timestamps: Sequence[datetime]) -> None:
+        assert_inputs_before(proposal, price_timestamps)
+        stamped = require_utc(proposal.timestamp_utc)
+        previous_hash = self._previous_hash(stamped)
+        self._write(
             {
                 "schema": SCHEMA,
                 "record_type": "proposal",
@@ -190,10 +229,29 @@ class ProposalLog:
             },
             previous_hash,
         )
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(canonical(record) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
+
+    def append_event(
+        self,
+        *,
+        timestamp_utc: datetime,
+        record_type: str,
+        fields: Mapping[str, object],
+        price_timestamps: Sequence[datetime] = (),
+    ) -> None:
+        """Append a snapshot, screen, or pre-registration record onto the same chain."""
+        if record_type not in {"snapshot", "screen", "preregistration"}:
+            raise ResearchError("forward log event type is not allowed")
+        stamped = require_utc(timestamp_utc)
+        _reject_prices(stamped, price_timestamps, strict=record_type != "snapshot")
+        safe = _json_safe(dict(fields), record_type)
+        if not isinstance(safe, dict):
+            raise ResearchError("forward log fields must be an object")
+        body: dict[str, object] = {"schema": SCHEMA, "record_type": record_type, "timestamp_utc": _iso(stamped)}
+        for key, value in safe.items():
+            if key in body or key in {"prev_hash", "record_hash"}:
+                raise ResearchError(f"forward log field {key} is reserved")
+            body[key] = value
+        self._write(body, self._previous_hash(stamped))
 
 
 def _weights(proposal: ForwardProposal) -> dict[str, Decimal]:
