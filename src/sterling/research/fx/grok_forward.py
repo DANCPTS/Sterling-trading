@@ -247,6 +247,8 @@ class ProposalLog:
             "week_reserve",
             "decision",
             "fill",
+            "fill_skipped",
+            "order_cancelled",
             "distribution",
             "state_commit",
             "missed_week",

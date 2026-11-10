@@ -1,15 +1,24 @@
 # Disabled template. This file is NOT in the public repo's .github/workflows.
 # GitHub will not run it here. Copy it into a private repo only after SETUP.md.
-# The job is also forced off with `if: false`.
+# The job is forced off with `if: false`. The schedule stays commented out.
 name: weekly-forward-decision
 on:
   workflow_dispatch:
+    inputs:
+      provider:
+        description: mock or xai. The default is mock.
+        required: false
+        default: mock
+        type: choice
+        options:
+          - mock
+          - xai
   # schedule:
   #   - cron: "30 16 * * 1"
 permissions:
   contents: none
 concurrency:
-  group: weekly-forward-decision
+  group: weekly-forward-evidence
   cancel-in-progress: false
 jobs:
   decide:
@@ -19,20 +28,27 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          ref: evidence
+          fetch-depth: 0
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - name: Install
         run: python -m pip install -e .
+      - name: Refuse main
+        run: test "$(git branch --show-current)" = "evidence"
       - name: Decide
         env:
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           HEALTHCHECKS_PING_URL: ${{ secrets.HEALTHCHECKS_PING_URL }}
-        run: python scripts/run_weekly_decision.py --provider mock --log evidence/forward.jsonl
+        run: |
+          provider="${{ inputs.provider }}"
+          if [ "$provider" != "xai" ]; then provider="mock"; fi
+          extra=""
+          if [ "$provider" = "xai" ]; then extra="--enable-xai"; fi
+          python scripts/run_weekly_decision.py --provider "$provider" $extra --log evidence/forward.jsonl
       - name: Verify
         run: python deploy/private-runner/verify_from_log.py --log evidence/forward.jsonl
-      - name: Commit evidence
-        run: |
-          git add evidence
-          git diff --cached --quiet || git commit -m "Record the weekly forward log"
-          git push
+      - name: Publish evidence
+        run: python deploy/private-runner/publish_evidence.py --clone . --branch evidence --remote origin

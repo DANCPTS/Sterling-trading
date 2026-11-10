@@ -91,7 +91,7 @@ def test_rejected_xai_payload_is_logged_and_fails(tmp_path: Path, monkeypatch: p
     monkeypatch.setenv(ENV_KEY, "xai-test-key-not-real")
     module = _script()
     monkeypatch.setattr(module.urllib.request, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("network")))
-    snapshot, _holds, _prints = module.build_snapshot(
+    snapshot, _holds, _prints, _opens = module.build_snapshot(
         as_of=datetime(2024, 6, 7, 16, 30, tzinfo=UTC),
         cache=None,
         fetch_free=False,

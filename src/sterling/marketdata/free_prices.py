@@ -1,19 +1,46 @@
 """Free price readers. Tests pass canned bytes. Nothing here is committed market data.
 
-Yahoo chart responses are not redistributable. Keep them in a gitignored cache.
-Stooq units are unverified until the caller names the quote currency. A missing
-timestamp is dropped rather than stamped with the fetch time.
+Yahoo chart responses are not redistributable. Keep them out of the public repo.
+The daily bar timestamp from Yahoo is the London session open. That timestamp
+is the open's observation time. It is not the time the close was known.
+Stooq is parsed only for tests. It is not the live second source: the daily
+CSV URL does not return a CSV from this environment.
 """
 
 from __future__ import annotations
 
 import csv
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from io import StringIO
+from zoneinfo import ZoneInfo
+
+LONDON = ZoneInfo("Europe/London")
+ISHARES_PORTFOLIOS = {
+    "CUKX": "253716",
+    "IGLT": "251806",
+    "AGBP": "291771",
+    "SGLN": "258441",
+}
+_MONTHS = {
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "sept": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
 
 YAHOO_SYMBOLS = {
     "VWRP": "VWRP.L",
@@ -41,6 +68,70 @@ class RawPrint:
     quoted_in: str
     published_at: datetime
     source: str
+    open_price: Decimal | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class YahooBar:
+    """One daily bar. ``open_at`` is the chart timestamp. ``close_at`` is 16:30 London."""
+
+    ticker: str
+    session: date
+    open_price: Decimal | None
+    close_price: Decimal | None
+    quoted_in: str
+    open_at: datetime
+    close_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class NavPrint:
+    """Issuer NAV. ``valuation_date`` is not the publication time."""
+
+    ticker: str
+    valuation_date: date
+    price: Decimal
+    quoted_in: str
+    source: str
+
+
+def next_london_morning(valuation: date) -> datetime:
+    """Next weekday 08:00 in London. Used as the NAV publication time when the file has none."""
+    day = valuation + timedelta(days=1)
+    while day.weekday() >= 5:
+        day += timedelta(days=1)
+    return datetime(day.year, day.month, day.day, 8, 0, tzinfo=LONDON).astimezone(UTC)
+
+
+def london_session(moment: datetime, hour: int, minute: int) -> datetime:
+    """Clock time in London on the same London date, as UTC."""
+    local = moment.astimezone(LONDON)
+    stamped = datetime(local.year, local.month, local.day, hour, minute, tzinfo=LONDON)
+    return stamped.astimezone(UTC)
+
+
+def yahoo_bars(ticker: str, payload: bytes) -> tuple[YahooBar, ...]:
+    """Read Yahoo daily opens and closes. A bar with no timestamp is dropped."""
+    loaded = json.loads(payload.decode("utf-8"))
+    result = loaded["chart"]["result"][0]
+    meta = result.get("meta") or {}
+    quoted = str(meta.get("currency") or "GBP")
+    timestamps = result["timestamp"]
+    quote = result["indicators"]["quote"][0]
+    opens = quote.get("open") or []
+    closes = quote.get("close") or []
+    rows: list[YahooBar] = []
+    for index, stamp in enumerate(timestamps):
+        if stamp is None:
+            continue
+        open_at = datetime.fromtimestamp(int(stamp), tz=UTC)
+        session = open_at.astimezone(LONDON).date()
+        open_price = _positive(opens[index] if index < len(opens) else None)
+        close_price = _positive(closes[index] if index < len(closes) else None)
+        if open_price is None and close_price is None:
+            continue
+        rows.append(YahooBar(ticker, session, open_price, close_price, quoted, open_at, london_session(open_at, 16, 30)))
+    return tuple(rows)
 
 
 def yahoo_chart(ticker: str, payload: bytes) -> tuple[RawPrint, ...]:
@@ -85,6 +176,45 @@ def stooq_csv(ticker: str, payload: bytes, *, quoted_in: str) -> tuple[RawPrint,
     return tuple(rows)
 
 
+def ishares_nav_xls(ticker: str, payload: bytes) -> tuple[NavPrint, ...]:
+    """Read the Historical NAVs sheet of an iShares XML spreadsheet.
+
+    The date in the sheet is the valuation date. This function does not invent
+    a publication time.
+    """
+    text = payload.decode("utf-8", errors="replace")
+    sheet = _worksheet(text, "Historical NAVs")
+    if not sheet:
+        return ()
+    quoted = _labelled_currency(text)
+    rows: list[NavPrint] = []
+    for cells in _xml_rows(sheet):
+        if not cells:
+            continue
+        session = _ishares_date(cells[0])
+        price = _positive(cells[1]) if len(cells) > 1 else None
+        if session is None or price is None or quoted is None:
+            continue
+        rows.append(NavPrint(ticker, session, price, quoted, "ishares-nav"))
+    return tuple(rows)
+
+
+def boe_usd_per_gbp(payload: bytes) -> tuple[tuple[date, Decimal], ...]:
+    """Bank of England XUDLUSS: US dollars per one pound. The date is the observation date."""
+    text = payload.decode("utf-8", errors="replace")
+    rows: list[tuple[date, Decimal]] = []
+    for line in text.splitlines():
+        parts = [item.strip() for item in line.split(",")]
+        if len(parts) < 2 or parts[0].upper() == "DATE":
+            continue
+        observed = _boe_date(parts[0])
+        price = _positive(parts[1])
+        if observed is None or price is None:
+            continue
+        rows.append((observed, price))
+    return tuple(rows)
+
+
 def collect_free(getter: Callable[[str], bytes]) -> tuple[tuple[RawPrint, ...], tuple[RawPrint, ...]]:
     """Read Yahoo and Stooq through the injected getter. Stooq currency stays unverified."""
     yahoo: list[RawPrint] = []
@@ -96,6 +226,62 @@ def collect_free(getter: Callable[[str], bytes]) -> tuple[tuple[RawPrint, ...], 
         url = f"https://stooq.com/q/d/l/?s={symbol}&i=d"
         stooq.extend(stooq_csv(ticker, fetch_bytes(url, getter), quoted_in="UNVERIFIED"))
     return tuple(yahoo), tuple(stooq)
+
+
+def _positive(value: object) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    try:
+        price = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    if price <= 0:
+        return None
+    return price
+
+
+def _worksheet(text: str, name: str) -> str:
+    match = re.search(rf'<ss:Worksheet[^>]*ss:Name="{re.escape(name)}".*?</ss:Worksheet>', text, re.DOTALL)
+    return match.group(0) if match else ""
+
+
+def _xml_rows(sheet: str) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for row in re.findall(r"<ss:Row\b.*?</ss:Row>", sheet, re.DOTALL):
+        rows.append(re.findall(r"<ss:Data\b[^>]*>([^<]*)</ss:Data>", row))
+    return rows
+
+
+def _labelled_currency(text: str) -> str | None:
+    for label in ("Share Class Currency", "Base Currency", "Currency"):
+        match = re.search(
+            rf">{re.escape(label)}</ss:Data>.*?<ss:Data\b[^>]*>\s*([A-Z]{{3}})\s*</ss:Data>",
+            text,
+            re.DOTALL,
+        )
+        if match:
+            return match.group(1)
+    return None
+
+
+def _ishares_date(value: str) -> date | None:
+    match = re.fullmatch(r"(\d{1,2})/([A-Za-z]+)/(\d{4})", value.strip())
+    if not match:
+        return None
+    month = _MONTHS.get(match.group(2).lower())
+    if month is None:
+        return None
+    try:
+        return date(int(match.group(3)), month, int(match.group(1)))
+    except ValueError:
+        return None
+
+
+def _boe_date(value: str) -> date | None:
+    try:
+        return datetime.strptime(value.strip(), "%d %b %Y").date()
+    except ValueError:
+        return None
 
 
 def fetch_bytes(url: str, getter: Callable[[str], bytes]) -> bytes:

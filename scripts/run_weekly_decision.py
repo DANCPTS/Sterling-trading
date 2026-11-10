@@ -18,7 +18,15 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
-from sterling.marketdata.free_prices import STOOQ_SYMBOLS, YAHOO_SYMBOLS, fetch_bytes, stooq_csv, yahoo_chart
+from sterling.marketdata.free_prices import (
+    ISHARES_PORTFOLIOS,
+    YAHOO_SYMBOLS,
+    boe_usd_per_gbp,
+    fetch_bytes,
+    ishares_nav_xls,
+    next_london_morning,
+    yahoo_bars,
+)
 from sterling.research.calendar import xlon_weekday
 from sterling.research.errors import ResearchError
 from sterling.research.fx.grok_forward import ProposalLog
@@ -33,6 +41,7 @@ from sterling.research.grok.verify import verify_modes
 from sterling.research.grok.weekly import WeekResult, record_unquoted_week, run_week, state_file
 from sterling.xai_client import UsageRecord, XaiClient, XaiError
 
+QUOTE_NOTES: list[str] = []
 BOE_SONIA = (
     "https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp"
     "?csv.x=yes&Datefrom=01/Jan/2024&Dateto=now&SeriesCodes=IUDSOIA&CSVF=TN&UsingCodes=Y&VPD=Y&VFD=N"
@@ -63,17 +72,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         as_of = datetime.now(UTC) if args.as_of is None else _as_of(args.as_of)
         prints = fixture_prints(as_of) if args.fixture or args.simulated_clock else None
         holds: dict[str, str] = {}
+        opens: dict[str, tuple[str, str, str, str]] = {}
         if args.fixture or args.simulated_clock:
             snapshot = fixture_snapshot(as_of, prints or [])
             mode = "simulated_clock"
+            opens = _choose_opens(_fixture_opens(prints or []), _pending_decision(args.log), as_of)
         else:
-            snapshot, holds, prints = build_snapshot(
+            snapshot, holds, prints, open_rows = build_snapshot(
                 as_of=as_of,
                 cache=args.cache,
                 fetch_free=args.fetch_free,
                 demo_offline=args.demo_offline,
             )
             mode = "demo" if args.demo_offline else "forward"
+            opens = _choose_opens(open_rows, _pending_decision(args.log), as_of)
+            for note in QUOTE_NOTES:
+                print(note)
         if snapshot is None:
             result = record_unquoted_week(
                 log_path=args.log,
@@ -98,6 +112,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             as_of=as_of if mode != "forward" else None,
             prints=prints,
             hold_reasons=holds,
+            opens=opens,
         )
         print(
             f"phase={PILOT_LABEL} status={result.status} week={result.week_key} "
@@ -132,19 +147,21 @@ def build_snapshot(
     cache: Path | None,
     fetch_free: bool,
     demo_offline: bool,
-) -> tuple[MarketSnapshot | None, dict[str, str], list[PriceObservation] | None]:
+) -> tuple[MarketSnapshot | None, dict[str, str], list[PriceObservation] | None, list[tuple[str, str, str, str, str]]]:
     if demo_offline:
-        return _demo_snapshot(as_of), {}, None
+        return _demo_snapshot(as_of), {}, None, []
     if cache is None:
         raise ResearchError("pass --cache with local CSVs, or --demo-offline. No prices were fetched.")
+    open_rows: list[tuple[str, str, str, str, str]] = []
     if fetch_free:
         fetch_boe_sonia(cache / "boe_sonia.csv")
-        primary, secondary = _download_free(cache)
+        primary, secondary, open_rows = _live_inputs(as_of)
     else:
         primary = _prices_from_cache(cache, as_of, suffix=".csv", source="local-csv")
         secondary = _prices_from_cache(cache, as_of, suffix=".check.csv", source="local-check")
     sonia = _sonia_from_cache(cache / "boe_sonia.csv", as_of) if (cache / "boe_sonia.csv").is_file() else ()
-    return _assessed(as_of, primary, secondary, sonia)
+    snapshot, holds, kept = _assessed(as_of, primary, secondary, sonia)
+    return snapshot, holds, kept, open_rows
 
 
 def run_decision(
@@ -159,6 +176,7 @@ def run_decision(
     as_of: datetime | None = None,
     prints: list[PriceObservation] | None = None,
     hold_reasons: dict[str, str] | None = None,
+    opens: dict[str, tuple[str, str, str, str]] | None = None,
 ) -> tuple[WeekResult, UsageRecord | None]:
     usage_box: dict[str, UsageRecord | None] = {"usage": None}
 
@@ -184,6 +202,7 @@ def run_decision(
         recorder=SystemClock(),
         prints=prints,
         hold_reasons=hold_reasons,
+        opens=opens,
     )
     if provider_name == "xai" and result.status == "decided" and result.gate != "accepted":
         raise ResearchError(f"xAI proposal was rejected: {result.gate}")
@@ -299,55 +318,161 @@ def _prices_from_cache(cache: Path, as_of: datetime, *, suffix: str, source: str
     return rows
 
 
-def _download_free(cache: Path) -> tuple[list[PriceObservation], list[PriceObservation]]:
-    """Fetch Yahoo and Stooq. Raw bodies are not written. Stooq needs stooq-units.csv."""
-    units = _stooq_units(cache / "stooq-units.csv")
+def _live_inputs(
+    as_of: datetime,
+) -> tuple[list[PriceObservation], list[PriceObservation], list[tuple[str, str, str, str, str]]]:
+    """Yahoo closes and opens, plus iShares NAVs. Raw responses are not stored."""
 
     def _getter(url: str) -> bytes:
-        request = urllib.request.Request(url, headers={"User-Agent": "SterlingResearch/1.0"})
-        with urllib.request.urlopen(request, timeout=30) as response:
+        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(request, timeout=60) as response:
             return bytes(response.read())
 
-    primary: list[PriceObservation] = []
-    secondary: list[PriceObservation] = []
+    boe_url = (
+        "https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp"
+        "?csv.x=yes&Datefrom=01/Jan/2024&Dateto=now&SeriesCodes=XUDLUSS&CSVF=TN&UsingCodes=Y&VPD=Y&VFD=N"
+    )
+    fx = {day: rate for day, rate in boe_usd_per_gbp(fetch_bytes(boe_url, _getter))}
+    closes: list[PriceObservation] = []
+    navs: list[PriceObservation] = []
+    opens: list[tuple[str, str, str, str, str]] = []
+    close_units: dict[str, str] = {}
+    nav_units: dict[str, str] = {}
     for ticker, symbol in YAHOO_SYMBOLS.items():
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=2y"
-        primary.extend(_gbp_prints(yahoo_chart(ticker, fetch_bytes(url, _getter)), "yahoo-chart"))
-    for ticker, symbol in STOOQ_SYMBOLS.items():
-        unit = units.get(ticker)
-        if unit is None:
-            continue
-        url = f"https://stooq.com/q/d/l/?s={symbol}&i=d"
-        secondary.extend(_gbp_prints(stooq_csv(ticker, fetch_bytes(url, _getter), quoted_in=unit), "stooq"))
-    return primary, secondary
+        for bar in yahoo_bars(ticker, fetch_bytes(url, _getter)):
+            if bar.close_price is not None and bar.close_at <= as_of:
+                closes.append(_gbp_observation(ticker, bar.session, bar.close_price, bar.quoted_in, bar.close_at, "yahoo-chart"))
+                close_units[ticker] = bar.quoted_in
+            if bar.open_price is not None and bar.open_at <= as_of:
+                price = _gbp_amount(ticker, bar.open_price, bar.quoted_in)
+                if price is not None:
+                    opens.append((ticker, format(price, "f"), bar.session.isoformat(), bar.open_at.isoformat(), "yahoo-open"))
+    for ticker, portfolio in ISHARES_PORTFOLIOS.items():
+        url = (
+            "https://www.ishares.com/varnish-api/uk-retail01-product-data/product-data/api/v1/get-fund-document"
+            "?appType=PRODUCT_PAGE&appSubType=ISHARES&targetSite=ishares-uk&locale=en_GB"
+            f"&portfolioId={portfolio}&component=fundDownloadV2&userType=individual"
+        )
+        for item in ishares_nav_xls(ticker, fetch_bytes(url, _getter)):
+            published = next_london_morning(item.valuation_date)
+            if published > as_of:
+                continue
+            price = _nav_gbp(item.price, item.quoted_in, item.valuation_date, fx)
+            if price is None:
+                continue
+            navs.append(PriceObservation(ticker, item.valuation_date, price, published, "ishares-nav"))
+            nav_units[ticker] = item.quoted_in
+    _remember_notes(closes, navs, close_units, nav_units)
+    return closes, navs, opens
 
 
-def _stooq_units(path: Path) -> dict[str, str]:
+def _remember_notes(
+    closes: list[PriceObservation],
+    navs: list[PriceObservation],
+    close_units: dict[str, str],
+    nav_units: dict[str, str],
+) -> None:
+    QUOTE_NOTES.clear()
+    for ticker in YAHOO_SYMBOLS:
+        close = [item for item in closes if item.instrument_id == ticker]
+        nav = [item for item in navs if item.instrument_id == ticker]
+        last_close = max(close, key=lambda item: item.session) if close else None
+        last_nav = max(nav, key=lambda item: item.session) if nav else None
+        shared = sorted({item.session for item in close} & {item.session for item in nav})
+        paired = ""
+        if shared:
+            day = shared[-1]
+            close_price = next(item.price for item in close if item.session == day)
+            nav_price = next(item.price for item in nav if item.session == day)
+            gap = (close_price - nav_price) / nav_price
+            paired = f" paired_session={day.isoformat()} paired_close_gbp={close_price} premium={gap}"
+        QUOTE_NOTES.append(
+            " ".join(
+                [
+                    ticker,
+                    f"close_gbp={last_close.price if last_close else 'none'}",
+                    f"close_session={last_close.session.isoformat() if last_close else 'none'}",
+                    f"close_published={last_close.published_at.isoformat() if last_close else 'none'}",
+                    f"close_unit={close_units.get(ticker, 'none')}",
+                    f"close_source={last_close.source if last_close else 'none'}",
+                    f"nav_gbp={last_nav.price if last_nav else 'none'}",
+                    f"nav_unit={nav_units.get(ticker, 'none')}",
+                    f"nav_valuation={last_nav.session.isoformat() if last_nav else 'none'}",
+                    f"nav_published={last_nav.published_at.isoformat() if last_nav else 'none'}",
+                    f"nav_source={last_nav.source if last_nav else 'none'}{paired}",
+                ]
+            )
+        )
+
+
+def _pending_decision(path: Path) -> datetime | None:
     if not path.is_file():
-        return {}
-    units: dict[str, str] = {}
-    with path.open(encoding="utf-8", newline="") as handle:
-        for record in csv.DictReader(handle):
-            units[record["ticker"]] = record["quoted_in"]
-    return units
+        return None
+    latest: datetime | None = None
+    for record in ProposalLog(path).records():
+        if record.get("record_type") != "decision":
+            continue
+        text = record.get("decision_at")
+        if isinstance(text, str):
+            latest = datetime.fromisoformat(text)
+    return latest
 
 
-def _gbp_prints(prints: tuple[object, ...], source: str) -> list[PriceObservation]:
-    rows: list[PriceObservation] = []
+def _choose_opens(
+    rows: list[tuple[str, str, str, str, str]],
+    pending: datetime | None,
+    as_of: datetime,
+) -> dict[str, tuple[str, str, str, str]]:
+    chosen: dict[str, tuple[str, str, str, str]] = {}
+    if pending is None:
+        return chosen
+    for ticker, price, session, available, source in rows:
+        moment = datetime.fromisoformat(available)
+        if moment <= pending or moment > as_of:
+            continue
+        current = chosen.get(ticker)
+        if current is None or available < current[2]:
+            chosen[ticker] = (price, session, available, source)
+    return chosen
+
+
+def _fixture_opens(prints: list[PriceObservation]) -> list[tuple[str, str, str, str, str]]:
+    rows: list[tuple[str, str, str, str, str]] = []
     for item in prints:
-        quoted = str(item.quoted_in)
-        if quoted == "UNVERIFIED":
-            continue
-        ticker = str(item.ticker)
-        divisor = gbp_divisor(ticker) if quoted in {"GBp", "GBX"} else Decimal(1)
-        try:
-            price = to_gbp(Decimal(str(item.price)), quoted, divisor)
-        except ResearchError:
-            continue
-        session = item.session
-        published = item.published_at
-        rows.append(PriceObservation(ticker, session, price, published, source))
+        available = datetime(item.session.year, item.session.month, item.session.day, 8, 0, tzinfo=UTC)
+        rows.append((item.instrument_id, format(item.price, "f"), item.session.isoformat(), available.isoformat(), "fixture-open"))
     return rows
+
+
+def _gbp_amount(ticker: str, price: Decimal, quoted: str) -> Decimal | None:
+    divisor = gbp_divisor(ticker) if quoted in {"GBp", "GBX"} else Decimal(1)
+    try:
+        converted = to_gbp(price, "GBP" if quoted == "GBP" else quoted, divisor)
+        return converted.quantize(Decimal("0.000001"))
+    except ResearchError:
+        return None
+
+
+def _gbp_observation(
+    ticker: str, session: date, price: Decimal, quoted: str, published: datetime, source: str
+) -> PriceObservation | None:
+    amount = _gbp_amount(ticker, price, quoted)
+    if amount is None:
+        raise ResearchError(f"{ticker} quote unit {quoted} was not converted")
+    return PriceObservation(ticker, session, amount, published, source)
+
+
+def _nav_gbp(price: Decimal, quoted: str, valuation: date, fx: dict[date, Decimal]) -> Decimal | None:
+    if quoted == "GBP":
+        return price
+    if quoted == "USD":
+        earlier = [day for day in fx if day <= valuation]
+        rate = fx[max(earlier)] if earlier else None
+        if rate is None or rate <= 0:
+            return None
+        return (price / rate).quantize(Decimal("0.000001"))
+    return _gbp_amount("SGLN", price, quoted)
 
 
 def _assessed(
@@ -394,11 +519,18 @@ def _sonia_from_cache(path: Path, as_of: datetime) -> tuple[SoniaObservation, ..
     rows: list[SoniaObservation] = []
     with path.open(encoding="utf-8", newline="") as handle:
         for record in csv.DictReader(handle):
-            observed = date.fromisoformat(record["date"][:10])
+            raw_date = record.get("date") or record.get("DATE") or ""
+            raw_rate = record.get("rate") or record.get("IUDSOIA")
+            if not raw_date or not raw_rate:
+                continue
+            try:
+                observed = date.fromisoformat(raw_date[:10])
+            except ValueError:
+                observed = datetime.strptime(raw_date.strip(), "%d %b %Y").date()
             published = datetime.combine(observed + timedelta(days=1), datetime.min.time(), tzinfo=UTC).replace(hour=8)
             if published > as_of:
                 continue
-            percent = Decimal(record["rate"])
+            percent = Decimal(raw_rate)
             rows.append(SoniaObservation(observed, percent / Decimal(100), published, "boe-iadb"))
     return tuple(rows)
 

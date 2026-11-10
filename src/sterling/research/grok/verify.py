@@ -45,6 +45,8 @@ def verify_modes(records: Sequence[Mapping[str, object]], *, now: datetime) -> s
                 raise ResearchError("decision time is in the future")
             if recorded_at - decision_at > timedelta(minutes=30):
                 raise ResearchError("forward decision is not the time it was written")
+            if recorded_at + _SKEW < response_at:
+                raise ResearchError("recorded time is before the response")
         elif mode in {"historical", "demo"}:
             if decision_at.date() == recorded_at.date():
                 raise ResearchError("historical decision is recorded as if it were made today")
@@ -53,6 +55,7 @@ def verify_modes(records: Sequence[Mapping[str, object]], *, now: datetime) -> s
         elif mode == "simulated_clock":
             if clock_source != "injected":
                 raise ResearchError("simulated clock advance must be labelled injected")
+    _week_claims(records)
     for index, record in enumerate(records):
         if record.get("record_type") != "state_commit":
             continue
@@ -60,6 +63,41 @@ def verify_modes(records: Sequence[Mapping[str, object]], *, now: datetime) -> s
         if record.get("state_hash") != state_hash(rebuilt):
             raise ResearchError("state hash does not match the log replay")
     return mode
+
+
+def chronological_weeks(records: Sequence[Mapping[str, object]]) -> tuple[tuple[str, str], ...]:
+    """Week order is the week key, not the order the lines were appended.
+
+    A missed week is often written when a later week is checked. ``detected_at``
+    is that moment. The returned list is the calendar order.
+    """
+    status: dict[str, str] = {}
+    for record in records:
+        week = record.get("week_key")
+        kind = record.get("record_type")
+        if not isinstance(week, str):
+            continue
+        if kind == "missed_week":
+            status.setdefault(week, "missed")
+        elif kind == "decision":
+            status[week] = "decision"
+    return tuple(sorted(status.items()))
+
+
+def _week_claims(records: Sequence[Mapping[str, object]]) -> None:
+    seen: dict[str, str] = {}
+    for record in records:
+        week = record.get("week_key")
+        kind = record.get("record_type")
+        if not isinstance(week, str) or kind not in {"decision", "missed_week"}:
+            continue
+        label = "missed" if kind == "missed_week" else "decision"
+        previous = seen.get(week)
+        if previous is not None and previous != label:
+            raise ResearchError(f"{week} is both a decision and a missed week")
+        seen[week] = label
+        if kind == "missed_week" and "detected_at" not in record:
+            raise ResearchError("missed week has no detection time")
 
 
 def missing_weeks(records: Sequence[Mapping[str, object]], expected: Sequence[str]) -> tuple[str, ...]:
@@ -84,8 +122,10 @@ def append_missed(log: ProposalLog, weeks: Sequence[str], *, recorded_at: dateti
             record_type="missed_week",
             fields={
                 "clock_source": "system" if mode == "forward" else "injected",
+                "detected_at": require_utc(recorded_at).isoformat(),
                 "mode": mode,
                 "note": "MISSED week. Not a backfill and not a trade.",
+                "order": "detection",
                 "recorded_at": require_utc(recorded_at).isoformat(),
                 "week_key": week,
             },

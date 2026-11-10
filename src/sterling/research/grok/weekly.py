@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -53,11 +53,13 @@ def run_week(
     mode: str,
     clock: Clock | None = None,
     recorder: Clock | None = None,
-    opens: Mapping[str, tuple[str, str]] | None = None,
+    opens: Mapping[str, tuple[str, str, str, str]] | None = None,
+    closes: Mapping[str, tuple[str, str, int]] | None = None,
     prints: Sequence[PriceObservation] | None = None,
     hold_reasons: Mapping[str, str] | None = None,
 ) -> WeekResult:
     """Settle the previous pending orders, then decide this week once."""
+    del prints
     chosen = require_mode(mode)
     event_clock = clock or SystemClock()
     write_clock = recorder or SystemClock()
@@ -73,15 +75,30 @@ def run_week(
         if not state_path.exists():
             write_state(state_path, book, log_sha=_tip(log))
         return WeekResult("noop", week, chosen, state_hash(book), 0, "noop")
-    settled = opens or (_opens_after(book.pending_decision_at, prints or ()) if book.pending_decision_at else {})
-    book = _settle(log, book, settled, recorded_at, chosen, write_clock)
+    outcome = _settle(
+        log,
+        book,
+        opens or {},
+        closes or {},
+        recorded_at,
+        chosen,
+        write_clock,
+        decision_clock=event_clock,
+    )
+    if outcome == "carry":
+        verify_modes(log.records(), now=write_clock.now())
+        return WeekResult("carried", week, chosen, state_hash(replay(log.records())), 0, "carry")
+    book = replay(log.records())
     _reserve(log, week, chosen, decision_at, recorded_at)
     request_at = event_clock.now()
     prompt = prompt_for(snapshot)
     raw, _model = provider(snapshot, prompt)
     response_at = event_clock.now()
+    recorded_at = write_clock.now()
     if response_at < request_at:
         raise ResearchError("response time is before the request time")
+    if chosen == "forward" and recorded_at < response_at:
+        raise ResearchError("decision was recorded before the response")
     weights, gate, reasons = _screen(snapshot, prompt, raw, hold_reasons or {})
     clock_source = "system" if chosen == "forward" else "injected"
     log.append_event(
@@ -169,8 +186,10 @@ def flag_missed_weeks(
             record_type="missed_week",
             fields={
                 "clock_source": "injected" if mode == "simulated_clock" else "system",
+                "detected_at": write_clock.now().isoformat(),
                 "mode": mode,
                 "note": "MISSED week. Not a backfill and not a trade.",
+                "order": "detection",
                 "recorded_at": write_clock.now().isoformat(),
                 "week_key": week,
             },
@@ -178,34 +197,72 @@ def flag_missed_weeks(
     return tuple(missing)
 
 
+def position_marks(
+    held: Sequence[str],
+    opens: Mapping[str, tuple[str, str, str, str]],
+    closes: Mapping[str, tuple[str, str, int]],
+    *,
+    max_age: int = 5,
+) -> dict[str, tuple[Decimal, str]] | None:
+    """Mark each holding with its own open, or its own close. Never another name."""
+    marks: dict[str, tuple[Decimal, str]] = {}
+    for ticker in held:
+        opened = opens.get(ticker)
+        if opened is not None and str(opened[3]).endswith("-open"):
+            marks[ticker] = (Decimal(opened[0]), "open")
+            continue
+        closed = closes.get(ticker)
+        if closed is None or closed[2] > max_age or closed[2] < 0:
+            return None
+        marks[ticker] = (Decimal(closed[0]), "stale_close")
+    return marks
+
+
 def _settle(
     log: ProposalLog,
     book: PaperBook,
-    opens: Mapping[str, tuple[str, str]],
+    opens: Mapping[str, tuple[str, str, str, str]],
+    closes: Mapping[str, tuple[str, str, int]],
     recorded_at: datetime,
     mode: str,
     write_clock: Clock,
-) -> PaperBook:
+    *,
+    decision_clock: Clock,
+) -> str:
     if not book.pending_week or not book.pending_targets:
-        return book
+        return "ready"
+    now = decision_clock.now()
+    decision_at = datetime.fromisoformat(book.pending_decision_at) if book.pending_decision_at else now
+    marks = position_marks(tuple(book.quantities), opens, closes)
+    if marks is None:
+        _skip(log, book, "valuation_invalid", recorded_at, mode, write_clock)
+        return "carry"
+    usable = {ticker: _usable_open(opens.get(ticker), decision_at, write_clock.now(), mode) for ticker in book.pending_targets}
+    if any(item is None for item in usable.values()):
+        if _sessions_after(decision_at, now) > 5:
+            for ticker, opened in usable.items():
+                if opened is None:
+                    _cancel(log, book, ticker, "opening_price_unavailable", recorded_at, mode, write_clock)
+            return "ready"
+        _skip(log, book, "no_opening_price", recorded_at, mode, write_clock)
+        return "carry"
     cash = book.cash
+    nav = cash
+    for name, quantity_held in book.quantities.items():
+        nav += quantity_held * marks[name][0]
     for ticker in sorted(book.pending_targets):
-        price_text, session = opens.get(ticker, ("", ""))
-        if not price_text:
+        opened = usable[ticker]
+        if opened is None:
             continue
-        price = Decimal(price_text)
+        price, session = opened
         target = Decimal(book.pending_targets[ticker])
-        nav = cash
-        for name, quantity_held in book.quantities.items():
-            mark = Decimal(opens[name][0]) if name in opens else price
-            nav += quantity_held * mark
         goal = quantize_qty_down(target * nav / price) if price > 0 else ZERO
         held = book.quantities.get(ticker, ZERO)
         if goal == held:
             continue
         side = "BUY" if goal > held else "SELL"
         quantity = goal - held if side == "BUY" else held - goal
-        model = research_cost_model(datetime.fromisoformat(session).date()) if session else research_cost_model(recorded_at.date())
+        model = research_cost_model(date.fromisoformat(session))
         quote = quote_trade(side, quantity, price, model, stamp=False, charge_fx=False)
         if quote.quantity == 0:
             continue
@@ -217,17 +274,87 @@ def _settle(
                 "cash_after_gbp": format(cash, "f"),
                 "cost_basis_gbp": format(quote.notional_gbp + quote.explicit_cost_gbp, "f"),
                 "cost_gbp": format(quote.total_cost_gbp, "f"),
+                "exec_price_gbp": format(quote.exec_price_gbp, "f"),
                 "mode": mode,
+                "open_gbp": format(price, "f"),
                 "price_gbp": format(price, "f"),
+                "price_role": "open",
                 "quantity": format(quote.quantity, "f"),
                 "recorded_at": write_clock.now().isoformat(),
                 "session": session,
                 "side": side,
+                "source": opens[ticker][3],
+                "spread_bps": format(model.spread_bps, "f"),
                 "ticker": ticker,
                 "week_key": book.pending_week,
             },
         )
-    return replay(log.records())
+    return "ready"
+
+
+def _usable_open(
+    opened: tuple[str, str, str, str] | None,
+    decision_at: datetime,
+    written_at: datetime,
+    mode: str,
+) -> tuple[Decimal, str] | None:
+    """Accept an opening print only after the decision and not after it was written down."""
+    if opened is None or not str(opened[3]).endswith("-open"):
+        return None
+    if mode == "forward" and opened[3] != "yahoo-open":
+        return None
+    available = datetime.fromisoformat(opened[2])
+    if available <= decision_at or available > written_at:
+        return None
+    if available.date() != date.fromisoformat(opened[1]):
+        return None
+    return Decimal(opened[0]), opened[1]
+
+
+def _sessions_after(decision_at: datetime, now: datetime) -> int:
+    day = decision_at.date()
+    count = 0
+    while day < now.date():
+        day += timedelta(days=1)
+        if day.weekday() < 5:
+            count += 1
+    return count
+
+
+def _skip(log: ProposalLog, book: PaperBook, reason: str, recorded_at: datetime, mode: str, write_clock: Clock) -> None:
+    log.append_event(
+        timestamp_utc=_after(log, recorded_at),
+        record_type="fill_skipped",
+        fields={
+            "mode": mode,
+            "reason": reason,
+            "recorded_at": write_clock.now().isoformat(),
+            "tickers": ",".join(sorted(book.pending_targets)),
+            "week_key": book.pending_week or "",
+        },
+    )
+
+
+def _cancel(
+    log: ProposalLog,
+    book: PaperBook,
+    ticker: str,
+    reason: str,
+    recorded_at: datetime,
+    mode: str,
+    write_clock: Clock,
+) -> None:
+    log.append_event(
+        timestamp_utc=_after(log, recorded_at),
+        record_type="order_cancelled",
+        fields={
+            "mode": mode,
+            "reason": reason,
+            "recorded_at": write_clock.now().isoformat(),
+            "ticker": ticker,
+            "week_key": book.pending_week or "",
+        },
+    )
 
 
 def _hold_without_call(
@@ -271,20 +398,6 @@ def _hold_without_call(
     )
     verify_modes(log.records(), now=write_clock.now())
     return WeekResult("decided", week, mode, digest, 0, "hold")
-
-
-def _opens_after(decision_at: str | None, prints: Sequence[PriceObservation]) -> dict[str, tuple[str, str]]:
-    if not decision_at:
-        return {}
-    moment = datetime.fromisoformat(decision_at)
-    day = moment.date() + timedelta(days=1)
-    while day.weekday() >= 5:
-        day += timedelta(days=1)
-    found: dict[str, tuple[str, str]] = {}
-    for item in prints:
-        if item.session == day and item.published_at > moment and item.instrument_id not in found:
-            found[item.instrument_id] = (format(item.price, "f"), day.isoformat())
-    return found
 
 
 def _reserve(log: ProposalLog, week: str, mode: str, decision_at: datetime, recorded_at: datetime) -> None:

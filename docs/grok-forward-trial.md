@@ -47,7 +47,7 @@ Cash, positions, costs, receivables, the transaction list, and NAV are replayed 
 
 ## Free prices
 
-VWRP, CUKX, IGLT, AGBP, SGLN, and XSTR can be read from Yahoo chart JSON and Stooq CSV through an injected getter. Tests never pass a live getter. Yahoo `meta.currency` of `GBp` is divided by the universe divisor (100 for CUKX, SGLN, and XSTR). A print with no timestamp is dropped. Stooq's currency is unverified until `stooq-units.csv` names `GBP` or `GBp`. One source, a print older than the configured session window (default 5), or a disagreement above 2% is HOLD for that name. The old price is not written back as a fresh quote. Yahoo chart bytes are not redistributable and are not written into this repo. A split or consolidation scales prints published before the action; distribution ex and pay dates stay on the existing research calendar.
+VWRP, CUKX, IGLT, AGBP, SGLN, and XSTR opens and closes are read from the Yahoo chart through an injected getter. The bar timestamp is the London open and is not used as the close time. The close is available at 16:30 London. Yahoo `GBp` is divided by 100 for CUKX, SGLN, and XSTR. CUKX, IGLT, AGBP, and SGLN NAVs come from the iShares fund file. That sheet date is the valuation date. The NAV is treated as published at 08:00 London on the next weekday. SGLN is in USD and is converted with Bank of England XUDLUSS. A premium HOLDs a name at 10% or more, above 5% before 60 overlapping sessions, or when it is at least 1 percentage point and three standard deviations from that fund's own history. A 2% band is not used. VWRP and XSTR have no issuer file that answers here, so they HOLD. Tests never pass a live getter. Yahoo bytes are not written into this repo.
 
 ## What is a ceiling and what the provider enforces
 

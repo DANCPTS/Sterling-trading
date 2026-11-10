@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from sterling.research.errors import ResearchError
@@ -18,7 +18,19 @@ from sterling.research.grok.context import PriceObservation
 from sterling.research.grok.preregistration import APPROVED_UNIVERSE
 from sterling.research.instruments import load_candidate_universe
 
-DISAGREEMENT = Decimal("0.02")
+# A flat 2% band would treat a normal ETF premium, including XSTR's roughly
+# 1.6% March 2020 discount, as a broken price. The check is the fund's own
+# premium history: HOLD when the latest premium is at least 1 percentage
+# point and at least 3 standard deviations from the prior sample, or when
+# the gap exceeds 10%, which is a unit or file error rather than a premium.
+# With fewer than 60 overlapping sessions the 10% cap still applies, and a
+# gap above 5% is also a HOLD. A smaller gap is kept and labelled as a short
+# sample, not as a match within 2%.
+MIN_PREMIUM_PAIRS = 60
+PREMIUM_Z = Decimal("3")
+MATERIAL_PREMIUM = Decimal("0.01")
+UNIT_ERROR_PREMIUM = Decimal("0.10")
+SHORT_HISTORY_PREMIUM = Decimal("0.05")
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,10 +113,61 @@ def assess_instrument(
         second.published_at, stamped, sessions, max_age_sessions
     ):
         return QuoteVerdict(instrument_id, "HOLD", None, None, first.source, "stale")
-    gap = abs(first.price - second.price) / first.price
-    if gap > DISAGREEMENT:
-        return QuoteVerdict(instrument_id, "HOLD", None, None, "disagreement", "sources_disagree")
-    return QuoteVerdict(instrument_id, "USE", first.price, first.published_at, first.source, "cross_checked")
+    aligned = _aligned(primary, secondary, instrument_id, stamped)
+    status, reason = premium_reason([(item.price, nav.price) for item, nav in aligned])
+    if status != "USE" or not aligned:
+        return QuoteVerdict(instrument_id, "HOLD", None, None, "premium", reason)
+    chosen, _nav = aligned[-1]
+    if _stale(chosen.published_at, stamped, sessions, max_age_sessions):
+        return QuoteVerdict(instrument_id, "HOLD", None, None, chosen.source, "stale")
+    return QuoteVerdict(instrument_id, "USE", chosen.price, chosen.published_at, chosen.source, reason)
+
+
+def premium_reason(pairs: Sequence[tuple[Decimal, Decimal]]) -> tuple[str, str]:
+    """Return USE or HOLD and a reason. ``pairs`` are (exchange_close, issuer_nav) in GBP."""
+    if not pairs:
+        return "HOLD", "missing_or_not_cross_checked"
+    close, nav = pairs[-1]
+    if nav <= 0 or close <= 0:
+        return "HOLD", "premium_anomaly"
+    latest = abs(close - nav) / nav
+    if latest > UNIT_ERROR_PREMIUM:
+        return "HOLD", "premium_anomaly"
+    prior = pairs[:-1]
+    if len(prior) < MIN_PREMIUM_PAIRS:
+        if latest > SHORT_HISTORY_PREMIUM:
+            return "HOLD", "premium_anomaly"
+        return "USE", "cross_checked_short_history"
+    gaps = [(item_close - item_nav) / item_nav for item_close, item_nav in prior if item_nav > 0]
+    if len(gaps) < MIN_PREMIUM_PAIRS:
+        return "HOLD", "premium_anomaly"
+    mean = sum(gaps, Decimal(0)) / Decimal(len(gaps))
+    variance = sum((item - mean) ** 2 for item in gaps) / Decimal(len(gaps))
+    scale = variance.sqrt()
+    signed = (close - nav) / nav
+    if scale > 0 and abs(signed - mean) >= PREMIUM_Z * scale and abs(signed) >= MATERIAL_PREMIUM:
+        return "HOLD", "premium_anomaly"
+    return "USE", "cross_checked"
+
+
+def _aligned(
+    primary: Sequence[PriceObservation],
+    secondary: Sequence[PriceObservation],
+    instrument_id: str,
+    as_of: datetime,
+) -> list[tuple[PriceObservation, PriceObservation]]:
+    firsts: dict[date, PriceObservation] = {}
+    seconds: dict[date, PriceObservation] = {}
+    for item in primary:
+        if item.instrument_id == instrument_id and item.price > 0 and require_utc(item.published_at) <= as_of:
+            firsts[item.session] = item
+    for item in secondary:
+        if item.instrument_id == instrument_id and item.price > 0 and require_utc(item.published_at) <= as_of:
+            seconds[item.session] = item
+    pairs: list[tuple[PriceObservation, PriceObservation]] = []
+    for session in sorted(set(firsts) & set(seconds)):
+        pairs.append((firsts[session], seconds[session]))
+    return pairs
 
 
 def _latest(

@@ -117,6 +117,8 @@ def replay(records: Sequence[Mapping[str, object]]) -> PaperBook:
                         book.pending_targets[name] = weight
         elif kind == "fill":
             _apply_fill(book, record)
+        elif kind == "order_cancelled":
+            _cancel_pending(book, record)
         elif kind == "distribution":
             _apply_distribution(book, record)
         elif kind == "nav":
@@ -155,8 +157,10 @@ def _apply_fill(book: PaperBook, record: Mapping[str, object]) -> None:
             book.quantities[ticker] = remaining
             book.costs[ticker] = basis * remaining / held if held > 0 else ZERO
     book.cash = cash_after
-    book.pending_week = None
-    book.pending_targets = {}
+    book.pending_targets.pop(ticker, None)
+    if not book.pending_targets:
+        book.pending_week = None
+        book.pending_decision_at = None
     book.transactions.append(
         {
             "cash_after_gbp": format(cash_after, "f"),
@@ -188,6 +192,16 @@ def _apply_distribution(book: PaperBook, record: Mapping[str, object]) -> None:
             item for item in book.receivables if item.get("ticker") != ticker or item.get("ex_date") != _text(record.get("ex_date"))
         ]
         book.cash = quantize_money(book.cash + amount)
+
+
+def _cancel_pending(book: PaperBook, record: Mapping[str, object]) -> None:
+    ticker = _text(record.get("ticker"))
+    if not ticker:
+        return
+    book.pending_targets.pop(ticker, None)
+    if not book.pending_targets:
+        book.pending_week = None
+        book.pending_decision_at = None
 
 
 def _text(value: object) -> str | None:
