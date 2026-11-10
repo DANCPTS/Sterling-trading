@@ -12,10 +12,10 @@ orders, connects to a broker, or fetches prices.
 - The instrument allowlist in Desk Rules v0.2 is empty. The ledger does not
   consult it, so tests can post synthetic ids. A later order gateway must refuse
   every instrument while the allowlist is empty.
-- The operational per-trade risk cap is £2.50 and the operational daily-loss cap is £5.00.
-  They are risk and loss caps, not position-size limits. Raising either one
-  is rejected unless a new owner-approved rules version is added in code and in
-  the rules file.
+- £2.50/£5 are operational risk/loss caps, not position-size limits. The
+  per-trade cap is £2.50 of planned risk and the daily-loss cap is £5.00.
+  Raising either one is rejected unless a new owner-approved rules version is
+  added in code and in the rules file.
 - Tests use invented `SYNTH-*` instruments and hand-written decimals. They are
   not market data and they are not backtest results. This repository makes no
   profitability claim.
@@ -106,9 +106,9 @@ tests/                     synthetic pytest suite
 `Backtester` placeholder, which still raises `NotImplementedError`. Gate 2
 does not import it. It does not submit orders, call a broker, or fetch data.
 `execution_permission` stays `NOT_ISSUED`. Desk Rules v0.2 and the Stage 2
-policy, including the £2.50 per-trade risk cap and the £5.00 daily-loss cap
-(not position-size limits), the provisional holding window,
-execution DENY, and the empty allowlist, are not read or modified here.
+policy are not read or modified here. £2.50/£5 are operational risk/loss caps,
+not position-size limits. The provisional holding window, execution DENY, and
+the empty allowlist are unchanged.
 
 The draft universe is not frozen. The provisional starting set is VWRP, CUKX,
 IGLT, AGBP, SGLN, and XSTR. CSP1 and ERNS are optional comparisons only.
@@ -123,6 +123,8 @@ that only reduces equity, bond, or gold weights into XSTR or literal cash is
 not scaled by the 50% one-way turnover cap. A buy that increases those
 weights stays capped.
 
+A distributing line accrues a dividend receivable on the ex-date. That receivable is in NAV and is not cash and not a position. It becomes cash on the payment date, and it can be reinvested only on the next session, at that session's open and with dealing costs. XSTR uses the issuer pay dates. Any other explicit distribution with no pay date waits 15 XLON sessions. An adjusted-close total-return series already includes the distribution, so it is not accrued again.
+
 Signals use the month-end close. Fills use the next XLON session open.
 XLON is weekdays minus England and Wales bank holidays, including Easter and
 the proclaimed one-offs checked against GOV.UK. Costs can include commission, half the bid-ask spread,
@@ -132,9 +134,10 @@ is not tax advice. GBP-traded lines are not FX-converted again; pence quotes
 (`GBp`, `GBX`) are divided by 100 first.
 
 Total return uses adjusted OHLC when that series is on the traded-price scale,
-and dividends are then ignored. Otherwise an explicit dividend column is
-reinvested at the same close. A distributing series with neither is labelled
-price-only. Accumulating prices are the reinvesting share price. Listed prices
+and those dividends are not accrued again. An explicit dividend is a receivable
+on the ex-date and cash on the pay date, as described above. A distributing
+series with neither an adjusted close nor a dividend is labelled price-only.
+Accumulating prices are the reinvesting share price. Listed prices
 are already net of OCF, TER, or XSTR's all-in fee, so the simulator does not
 deduct them again. VWRP's announced schedule (0.22%, then 0.19% from 7 Oct
 2025, then 0.14% from 28 Jul 2026) is disclosure. The start of the 0.22% rate
@@ -151,6 +154,10 @@ A draft Yahoo check that ended on 2026-09-21 matched an exclusive chart
 `period2` at 2026-09-22T00:00Z. The same endpoint on 2026-11-09 returned bars
 through 2026-11-09. Do not treat 2026-09-21 as the last session. Do not commit
 downloaded files. Put CSVs in a gitignored `.research-cache/` directory.
+`sterling.research.cash_benchmark.write_cash_benchmark` writes
+`.research-cache/exports/cash-benchmark.csv` for reuse. Its
+`total_return_index` counts a distribution on the ex-date. That file is not
+the simulated reinvestment path and it is not committed.
 
 The long history uses proxies where the ETF did not yet exist. Global equity
 before VWRL is a 60/30/10 mix of SPY, EFA and EEM, unhedged, from 2003, and is
