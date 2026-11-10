@@ -13,7 +13,7 @@ Do not copy the workflow into `.github/workflows` of the public repo.
    The workflow checks out `evidence` and `publish_evidence.py` refuses every other branch. It pushes with `--ff-only`.
    If the remote moved, new local records are re-appended onto that chain. A remote line is not deleted.
    The workflow concurrency group allows one job, and the publisher also takes a lock in the clone.
-   `workflow_dispatch` has a provider input. Anything other than `xai` is run as `mock`.
+   A manual dispatch accepts `mock` (the default) or `xai`. Any other value fails.
 5. Add repository secrets by name only:
    - `XAI_API_KEY`
    - `HEALTHCHECKS_PING_URL`
