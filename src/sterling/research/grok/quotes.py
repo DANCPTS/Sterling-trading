@@ -29,6 +29,7 @@ from sterling.research.instruments import load_candidate_universe
 MIN_PREMIUM_PAIRS = 60
 PREMIUM_Z = Decimal("3")
 MATERIAL_PREMIUM = Decimal("0.01")
+MARKET_GAP = Decimal("0.01")
 UNIT_ERROR_PREMIUM = Decimal("0.10")
 SHORT_HISTORY_PREMIUM = Decimal("0.05")
 
@@ -100,6 +101,7 @@ def assess_instrument(
     as_of: datetime,
     sessions: Sequence[datetime],
     max_age_sessions: int,
+    comparison: str = "nav",
 ) -> QuoteVerdict:
     """HOLD when the latest agreed print is missing, stale, or the sources disagree."""
     if instrument_id not in APPROVED_UNIVERSE:
@@ -114,13 +116,24 @@ def assess_instrument(
     ):
         return QuoteVerdict(instrument_id, "HOLD", None, None, first.source, "stale")
     aligned = _aligned(primary, secondary, instrument_id, stamped)
-    status, reason = premium_reason([(item.price, nav.price) for item, nav in aligned])
+    prices = [(item.price, nav.price) for item, nav in aligned]
+    status, reason = _market_reason(prices) if comparison == "market" else premium_reason(prices)
     if status != "USE" or not aligned:
         return QuoteVerdict(instrument_id, "HOLD", None, None, "premium", reason)
     chosen, _nav = aligned[-1]
     if _stale(chosen.published_at, stamped, sessions, max_age_sessions):
         return QuoteVerdict(instrument_id, "HOLD", None, None, chosen.source, "stale")
     return QuoteVerdict(instrument_id, "USE", chosen.price, chosen.published_at, chosen.source, reason)
+
+
+def _market_reason(pairs: Sequence[tuple[Decimal, Decimal]]) -> tuple[str, str]:
+    """Two market prints. A gap above 1% is a venue or unit error, not an NAV premium."""
+    if not pairs:
+        return "HOLD", "missing_or_not_cross_checked"
+    close, other = pairs[-1]
+    if other <= 0 or abs(close - other) / other > MARKET_GAP:
+        return "HOLD", "market_prices_disagree"
+    return "USE", "cross_checked_market"
 
 
 def premium_reason(pairs: Sequence[tuple[Decimal, Decimal]]) -> tuple[str, str]:
@@ -182,7 +195,11 @@ def _latest(
         published = require_utc(item.published_at)
         if published > as_of:
             continue
-        if chosen is None or published >= require_utc(chosen.published_at):
+        if (
+            chosen is None
+            or published > require_utc(chosen.published_at)
+            or (published == require_utc(chosen.published_at) and item.session >= chosen.session)
+        ):
             chosen = item
     return chosen
 

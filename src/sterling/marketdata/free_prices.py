@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from io import StringIO
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 LONDON = ZoneInfo("Europe/London")
@@ -96,7 +97,7 @@ class NavPrint:
 
 
 def next_london_morning(valuation: date) -> datetime:
-    """Next weekday 08:00 in London. Used as the NAV publication time when the file has none."""
+    """Unverified assumption only. Do not use this as the time a NAV became available."""
     day = valuation + timedelta(days=1)
     while day.weekday() >= 5:
         day += timedelta(days=1)
@@ -174,6 +175,64 @@ def stooq_csv(ticker: str, payload: bytes, *, quoted_in: str) -> tuple[RawPrint,
         published = datetime(session.year, session.month, session.day, 16, 30, tzinfo=UTC)
         rows.append(RawPrint(ticker, session, price, quoted_in, published, "stooq"))
     return tuple(rows)
+
+
+def first_seen_many(path: Path, identities: list[str], now: datetime) -> dict[str, datetime]:
+    """Persist the first UTC time each value was seen. Later calls return the original time."""
+    stamped = now.astimezone(UTC)
+    store: dict[str, str] = {}
+    if path.is_file():
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            store = {str(key): str(value) for key, value in loaded.items()}
+    changed = False
+    found: dict[str, datetime] = {}
+    for identity in identities:
+        if identity not in store:
+            store[identity] = stamped.isoformat()
+            changed = True
+        found[identity] = datetime.fromisoformat(store[identity])
+    if changed:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(store, sort_keys=True), encoding="utf-8")
+        temporary.replace(path)
+    return found
+
+
+def vanguard_nav_html(ticker: str, payload: bytes) -> tuple[NavPrint, ...]:
+    """Latest NAV embedded in the Vanguard UK professional fund page."""
+    text = payload.decode("utf-8", errors="replace")
+    match = re.search(
+        r'"navPrices":\{"items":\[\{"asOfDate":"(\d{4}-\d{2}-\d{2})","currencyCode":"([A-Z]{3})","price":([0-9]+(?:\.[0-9]+)?)',
+        text,
+    )
+    if not match:
+        return ()
+    return (NavPrint(ticker, date.fromisoformat(match.group(1)), Decimal(match.group(3)), match.group(2), "vanguard-nav"),)
+
+
+def justetf_quotes(ticker: str, payload: bytes) -> tuple[NavPrint, ...]:
+    """Independent market quotes. This is not an issuer NAV."""
+    loaded = json.loads(payload.decode("utf-8"))
+    venue = str(loaded.get("quoteTradingVenue") or "unknown").lower()
+    rows: list[NavPrint] = []
+    for price_key, date_key in (("latestQuote", "latestQuoteDate"), ("previousQuote", "previousQuoteDate")):
+        raw = loaded.get(price_key) or {}
+        session_text = loaded.get(date_key)
+        price = _positive(raw.get("raw") if isinstance(raw, dict) else None)
+        if price is None or not isinstance(session_text, str):
+            continue
+        rows.append(NavPrint(ticker, date.fromisoformat(session_text[:10]), price, "GBP", f"justetf-{venue}"))
+    return tuple(rows)
+
+
+def usd_on_valuation_date(price: Decimal, valuation: date, fx: dict[date, Decimal]) -> Decimal | None:
+    """Convert with the Bank of England rate dated that valuation date, not a later day."""
+    rate = fx.get(valuation)
+    if rate is None or rate <= 0:
+        return None
+    return (price / rate).quantize(Decimal("0.000001"))
 
 
 def ishares_nav_xls(ticker: str, payload: bytes) -> tuple[NavPrint, ...]:

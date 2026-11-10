@@ -25,6 +25,7 @@ Do not copy the workflow into `.github/workflows` of the public repo.
    It recomputes the hash chain and the paper state from the log. It does not trust `*.state.json`.
 10. OpenTimestamps stamping is off. `--stamp` raises and does not contact a server.
 11. Only after those steps, remove `if: false` from the private workflow. Leave the cron line commented until you want a schedule.
+12. For the first real call, run the workflow once with input `provider=xai`. That is one paid request. Then read `evidence/forward.jsonl` for `model_usage`, including `cost_in_usd_ticks`, and do not dispatch it again until you have checked that cost. The command the job runs is `python scripts/run_weekly_decision.py --provider xai --enable-xai --fetch-free --cache evidence --log evidence/forward.jsonl`.
 
 Missed weeks are appended as `missed_week` records. They are not backfilled with a decision or a trade.
 

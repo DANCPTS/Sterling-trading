@@ -146,6 +146,17 @@ def test_quotes_hold_on_stale_disagreement_and_pence() -> None:
     held = assess_instrument("VWRP", (fresh,), (disagree,), as_of=as_of, sessions=sessions, max_age_sessions=5)
     assert held.action == "HOLD"
     assert held.reason == "premium_anomaly"
+    market = assess_instrument(
+        "XSTR",
+        (PriceObservation("XSTR", as_of.date(), Decimal("181.36"), as_of, "yahoo-chart"),),
+        (PriceObservation("XSTR", as_of.date(), Decimal("181.27"), as_of, "justetf-xetra"),),
+        as_of=as_of,
+        sessions=sessions,
+        max_age_sessions=5,
+        comparison="market",
+    )
+    assert market.action == "USE"
+    assert market.reason == "cross_checked_market"
     assert held.price is None
     stale = PriceObservation("VWRP", as_of.date(), Decimal("100"), as_of - timedelta(days=30), "yahoo")
     old = assess_instrument("VWRP", (stale,), (stale,), as_of=as_of, sessions=sessions, max_age_sessions=5)

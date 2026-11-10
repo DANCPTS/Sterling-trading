@@ -23,8 +23,11 @@ from sterling.marketdata.free_prices import (
     YAHOO_SYMBOLS,
     boe_usd_per_gbp,
     fetch_bytes,
+    first_seen_many,
     ishares_nav_xls,
-    next_london_morning,
+    justetf_quotes,
+    usd_on_valuation_date,
+    vanguard_nav_html,
     yahoo_bars,
 )
 from sterling.research.calendar import xlon_weekday
@@ -155,7 +158,8 @@ def build_snapshot(
     open_rows: list[tuple[str, str, str, str, str]] = []
     if fetch_free:
         fetch_boe_sonia(cache / "boe_sonia.csv")
-        primary, secondary, open_rows = _live_inputs(as_of)
+        primary, secondary, open_rows = _live_inputs(cache)
+        as_of = datetime.now(UTC)
     else:
         primary = _prices_from_cache(cache, as_of, suffix=".csv", source="local-csv")
         secondary = _prices_from_cache(cache, as_of, suffix=".check.csv", source="local-check")
@@ -319,9 +323,9 @@ def _prices_from_cache(cache: Path, as_of: datetime, *, suffix: str, source: str
 
 
 def _live_inputs(
-    as_of: datetime,
+    cache: Path,
 ) -> tuple[list[PriceObservation], list[PriceObservation], list[tuple[str, str, str, str, str]]]:
-    """Yahoo closes and opens, plus iShares NAVs. Raw responses are not stored."""
+    """Yahoo bars plus issuer or independent second prints. Raw bodies are not stored."""
 
     def _getter(url: str) -> bytes:
         request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -332,6 +336,7 @@ def _live_inputs(
         "https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp"
         "?csv.x=yes&Datefrom=01/Jan/2024&Dateto=now&SeriesCodes=XUDLUSS&CSVF=TN&UsingCodes=Y&VPD=Y&VFD=N"
     )
+    now = datetime.now(UTC)
     fx = {day: rate for day, rate in boe_usd_per_gbp(fetch_bytes(boe_url, _getter))}
     closes: list[PriceObservation] = []
     navs: list[PriceObservation] = []
@@ -341,10 +346,10 @@ def _live_inputs(
     for ticker, symbol in YAHOO_SYMBOLS.items():
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=2y"
         for bar in yahoo_bars(ticker, fetch_bytes(url, _getter)):
-            if bar.close_price is not None and bar.close_at <= as_of:
+            if bar.close_price is not None and bar.close_at <= now:
                 closes.append(_gbp_observation(ticker, bar.session, bar.close_price, bar.quoted_in, bar.close_at, "yahoo-chart"))
                 close_units[ticker] = bar.quoted_in
-            if bar.open_price is not None and bar.open_at <= as_of:
+            if bar.open_price is not None and bar.open_at <= now:
                 price = _gbp_amount(ticker, bar.open_price, bar.quoted_in)
                 if price is not None:
                     opens.append((ticker, format(price, "f"), bar.session.isoformat(), bar.open_at.isoformat(), "yahoo-open"))
@@ -354,15 +359,41 @@ def _live_inputs(
             "?appType=PRODUCT_PAGE&appSubType=ISHARES&targetSite=ishares-uk&locale=en_GB"
             f"&portfolioId={portfolio}&component=fundDownloadV2&userType=individual"
         )
+        rows = []
         for item in ishares_nav_xls(ticker, fetch_bytes(url, _getter)):
-            published = next_london_morning(item.valuation_date)
-            if published > as_of:
-                continue
             price = _nav_gbp(item.price, item.quoted_in, item.valuation_date, fx)
             if price is None:
                 continue
+            rows.append((item, price))
+        seen = first_seen_many(
+            cache / "first_observed.json",
+            [f"ishares-nav|{ticker}|{item.valuation_date.isoformat()}|{item.price}" for item, _price in rows],
+            datetime.now(UTC),
+        )
+        for item, price in rows:
+            published = seen[f"ishares-nav|{ticker}|{item.valuation_date.isoformat()}|{item.price}"]
             navs.append(PriceObservation(ticker, item.valuation_date, price, published, "ishares-nav"))
             nav_units[ticker] = item.quoted_in
+    vanguard_url = "https://www.vanguard.co.uk/professional/product/etf/equity/9679/ftse-all-world-ucits-etf-usd-accumulating"
+    for item in vanguard_nav_html("VWRP", fetch_bytes(vanguard_url, _getter)):
+        price = usd_on_valuation_date(item.price, item.valuation_date, fx)
+        if price is None:
+            continue
+        identity = f"vanguard-nav|VWRP|{item.valuation_date.isoformat()}|{item.price}"
+        published = first_seen_many(cache / "first_observed.json", [identity], datetime.now(UTC))[identity]
+        navs.append(PriceObservation("VWRP", item.valuation_date, price, published, "vanguard-nav"))
+        nav_units["VWRP"] = item.quoted_in
+    justetf_url = "https://www.justetf.com/api/etfs/LU0321464652/quote?locale=en&currency=GBP"
+    xstr_rows = list(justetf_quotes("XSTR", fetch_bytes(justetf_url, _getter)))
+    xstr_seen = first_seen_many(
+        cache / "first_observed.json",
+        [f"{item.source}|XSTR|{item.valuation_date.isoformat()}|{item.price}" for item in xstr_rows],
+        datetime.now(UTC),
+    )
+    for item in xstr_rows:
+        identity = f"{item.source}|XSTR|{item.valuation_date.isoformat()}|{item.price}"
+        navs.append(PriceObservation("XSTR", item.valuation_date, item.price, xstr_seen[identity], item.source))
+        nav_units["XSTR"] = "GBP"
     _remember_notes(closes, navs, close_units, nav_units)
     return closes, navs, opens
 
@@ -467,11 +498,7 @@ def _nav_gbp(price: Decimal, quoted: str, valuation: date, fx: dict[date, Decima
     if quoted == "GBP":
         return price
     if quoted == "USD":
-        earlier = [day for day in fx if day <= valuation]
-        rate = fx[max(earlier)] if earlier else None
-        if rate is None or rate <= 0:
-            return None
-        return (price / rate).quantize(Decimal("0.000001"))
+        return usd_on_valuation_date(price, valuation, fx)
     return _gbp_amount("SGLN", price, quoted)
 
 
@@ -481,11 +508,13 @@ def _assessed(
     secondary: list[PriceObservation],
     sonia: tuple[SoniaObservation, ...],
 ) -> tuple[MarketSnapshot | None, dict[str, str], list[PriceObservation]]:
-    moments = sorted({item.published_at for item in (*primary, *secondary)})
+    moments = sorted({item.published_at for item in primary})
     holds: dict[str, str] = {}
     quotes: list[InstrumentQuote] = []
     kept: list[PriceObservation] = []
     for ticker in APPROVED_UNIVERSE:
+        market = any(item.source.startswith("justetf") for item in secondary if item.instrument_id == ticker)
+        comparison = "market" if market else "nav"
         verdict = assess_instrument(
             ticker,
             primary,
@@ -493,6 +522,7 @@ def _assessed(
             as_of=as_of,
             sessions=moments,
             max_age_sessions=5,
+            comparison=comparison,
         )
         if verdict.action != "USE" or verdict.price is None or verdict.published_at is None:
             holds[ticker] = verdict.reason

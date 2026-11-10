@@ -47,7 +47,7 @@ jobs:
           if [ "$provider" != "xai" ]; then provider="mock"; fi
           extra=""
           if [ "$provider" = "xai" ]; then extra="--enable-xai"; fi
-          python scripts/run_weekly_decision.py --provider "$provider" $extra --log evidence/forward.jsonl
+          python scripts/run_weekly_decision.py --provider "$provider" $extra --fetch-free --cache evidence --log evidence/forward.jsonl
       - name: Verify
         run: python deploy/private-runner/verify_from_log.py --log evidence/forward.jsonl
       - name: Publish evidence

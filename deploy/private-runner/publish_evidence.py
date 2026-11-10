@@ -46,6 +46,8 @@ def publish(clone: Path, *, branch: str = "evidence", remote: str = "origin") ->
         local.write_text(merged, encoding="utf-8")
         ProposalLog(local).verify()
         _git(clone, "add", LOG_NAME)
+        if (clone / "evidence" / "first_observed.json").is_file():
+            _git(clone, "add", "evidence/first_observed.json")
         if subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=clone, check=False).returncode == 0:
             return "unchanged"
         _git(clone, "commit", "-m", "Record the weekly forward log")
