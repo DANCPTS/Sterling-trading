@@ -201,6 +201,21 @@ and hash-chained. It scores a proposal only on prices after its UTC timestamp,
 rejects back-dated entries, and does not call a model or backfill a track
 record. The API hook is disabled.
 
+`sterling.research.grok` is the offline decision layer on that log. A provider
+returns data for one snapshot. Malformed, out-of-range, and late replies are
+stored as HOLD. The paper comparison in `sterling.research.grok.compare` runs
+Grok, the frozen ETF and FX rules, and the buy-and-hold and GBP-cash
+benchmarks on the same sessions, with next-session fills. See
+[docs/grok-forward-trial.md](docs/grok-forward-trial.md). The mock is offline:
+
+```bash
+python scripts/run_mock_forward_test.py --output research-output/mock-forward
+```
+
+The xAI class does not send a request. Desk Rules, the £2.50 per-trade risk
+cap, the £5 daily-loss cap, execution DENY, and the empty allowlist are
+unchanged. Those caps are risk and loss caps, not position-size limits.
+
 Not built yet: individual-stock momentum, breakout, mean reversion, and swing
 research. None of those are order paths. The older `GrokProposalStub` still
 refuses model calls.

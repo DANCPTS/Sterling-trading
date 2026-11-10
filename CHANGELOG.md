@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add an offline Grok decision layer, a hash-chained forward log of each
+  snapshot and proposal, and a paper comparison against the frozen rules and
+  cash and equal-weight benchmarks. No broker, no live trading, and no paid API.
+
 ## 0.3.0 - 2026-11-07
 
 Stage 2 Gate 2. Stage 1 ledger economics and the Gate 1 pure contracts are unchanged.
