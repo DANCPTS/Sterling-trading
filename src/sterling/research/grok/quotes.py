@@ -30,6 +30,11 @@ MIN_PREMIUM_PAIRS = 60
 PREMIUM_Z = Decimal("3")
 MATERIAL_PREMIUM = Decimal("0.01")
 MARKET_GAP = Decimal("0.01")
+# Xetra closes at 16:30 London and the Bank of England euro fixing is earlier
+# the same afternoon. Half an hour of EUR/GBP movement is normally a few
+# basis points. Half a percent leaves room for a rough afternoon without
+# accepting a missed currency conversion.
+FX_TIMING_GAP = Decimal("0.005")
 UNIT_ERROR_PREMIUM = Decimal("0.10")
 SHORT_HISTORY_PREMIUM = Decimal("0.05")
 
@@ -117,13 +122,28 @@ def assess_instrument(
         return QuoteVerdict(instrument_id, "HOLD", None, None, first.source, "stale")
     aligned = _aligned(primary, secondary, instrument_id, stamped)
     prices = [(item.price, nav.price) for item, nav in aligned]
-    status, reason = _market_reason(prices) if comparison == "market" else premium_reason(prices)
+    if comparison == "xetra_fx":
+        status, reason = _fx_timing_reason(prices)
+    elif comparison == "market":
+        status, reason = _market_reason(prices)
+    else:
+        status, reason = premium_reason(prices)
     if status != "USE" or not aligned:
         return QuoteVerdict(instrument_id, "HOLD", None, None, "premium", reason)
     chosen, _nav = aligned[-1]
     if _stale(chosen.published_at, stamped, sessions, max_age_sessions):
         return QuoteVerdict(instrument_id, "HOLD", None, None, chosen.source, "stale")
     return QuoteVerdict(instrument_id, "USE", chosen.price, chosen.published_at, chosen.source, reason)
+
+
+def _fx_timing_reason(pairs: Sequence[tuple[Decimal, Decimal]]) -> tuple[str, str]:
+    """LSE sterling close against an Xetra euro close converted on that date."""
+    if not pairs:
+        return "HOLD", "missing_or_not_cross_checked"
+    close, other = pairs[-1]
+    if other <= 0 or abs(close - other) / other > FX_TIMING_GAP:
+        return "HOLD", "fx_timing_gap"
+    return "USE", "cross_checked_xetra"
 
 
 def _market_reason(pairs: Sequence[tuple[Decimal, Decimal]]) -> tuple[str, str]:

@@ -212,8 +212,13 @@ def vanguard_nav_html(ticker: str, payload: bytes) -> tuple[NavPrint, ...]:
     return (NavPrint(ticker, date.fromisoformat(match.group(1)), Decimal(match.group(3)), match.group(2), "vanguard-nav"),)
 
 
-def justetf_quotes(ticker: str, payload: bytes) -> tuple[NavPrint, ...]:
-    """Independent market quotes. This is not an issuer NAV."""
+def justetf_quotes(ticker: str, payload: bytes, *, quoted_in: str) -> tuple[NavPrint, ...]:
+    """Parse a JustETF quote response.
+
+    ``quoted_in`` is the currency the caller requested. It is not the venue's
+    trading currency. Xetra lists XSTR as DXS1 in EUR, so a GBP response is a
+    converted display and is not a second source.
+    """
     loaded = json.loads(payload.decode("utf-8"))
     venue = str(loaded.get("quoteTradingVenue") or "unknown").lower()
     rows: list[NavPrint] = []
@@ -223,7 +228,7 @@ def justetf_quotes(ticker: str, payload: bytes) -> tuple[NavPrint, ...]:
         price = _positive(raw.get("raw") if isinstance(raw, dict) else None)
         if price is None or not isinstance(session_text, str):
             continue
-        rows.append(NavPrint(ticker, date.fromisoformat(session_text[:10]), price, "GBP", f"justetf-{venue}"))
+        rows.append(NavPrint(ticker, date.fromisoformat(session_text[:10]), price, quoted_in, f"justetf-{venue}"))
     return tuple(rows)
 
 
@@ -260,18 +265,36 @@ def ishares_nav_xls(ticker: str, payload: bytes) -> tuple[NavPrint, ...]:
 
 def boe_usd_per_gbp(payload: bytes) -> tuple[tuple[date, Decimal], ...]:
     """Bank of England XUDLUSS: US dollars per one pound. The date is the observation date."""
+    series = boe_columns(payload)
+    rows = series.get("XUDLUSS")
+    if rows is None and len(series) == 1:
+        rows = next(iter(series.values()))
+    if not rows:
+        return ()
+    return tuple(sorted(rows.items()))
+
+
+def boe_columns(payload: bytes) -> dict[str, dict[date, Decimal]]:
+    """Read a Bank of England CSV. Each series is foreign currency per one pound."""
     text = payload.decode("utf-8", errors="replace")
-    rows: list[tuple[date, Decimal]] = []
+    header: list[str] = []
+    columns: dict[str, dict[date, Decimal]] = {}
     for line in text.splitlines():
         parts = [item.strip() for item in line.split(",")]
-        if len(parts) < 2 or parts[0].upper() == "DATE":
+        if not parts or not parts[0]:
+            continue
+        if parts[0].upper() == "DATE":
+            header = parts[1:]
             continue
         observed = _boe_date(parts[0])
-        price = _positive(parts[1])
-        if observed is None or price is None:
+        if observed is None or not header:
             continue
-        rows.append((observed, price))
-    return tuple(rows)
+        for name, raw in zip(header, parts[1:], strict=False):
+            price = _positive(raw)
+            if price is None:
+                continue
+            columns.setdefault(name, {})[observed] = price
+    return columns
 
 
 def collect_free(getter: Callable[[str], bytes]) -> tuple[tuple[RawPrint, ...], tuple[RawPrint, ...]]:

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
+import os
 import sys
 import urllib.request
 from collections.abc import Sequence
@@ -21,11 +23,10 @@ from pathlib import Path
 from sterling.marketdata.free_prices import (
     ISHARES_PORTFOLIOS,
     YAHOO_SYMBOLS,
-    boe_usd_per_gbp,
+    boe_columns,
     fetch_bytes,
     first_seen_many,
     ishares_nav_xls,
-    justetf_quotes,
     usd_on_valuation_date,
     vanguard_nav_html,
     yahoo_bars,
@@ -42,7 +43,7 @@ from sterling.research.grok.schema import InstrumentQuote, MarketSnapshot, estim
 from sterling.research.grok.timekeeping import SystemClock, TickingClock
 from sterling.research.grok.verify import verify_modes
 from sterling.research.grok.weekly import WeekResult, record_unquoted_week, run_week, state_file
-from sterling.xai_client import UsageRecord, XaiClient, XaiError
+from sterling.xai_client import API_URL, HttpResponse, UsageRecord, XaiClient, XaiError
 
 QUOTE_NOTES: list[str] = []
 BOE_SONIA = (
@@ -134,6 +135,43 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
 
+class _OfflineXai:
+    """Test transport. It does not open a socket."""
+
+    def post(self, *, url: str, body: bytes, headers: object, connect_timeout: float, read_timeout: float) -> HttpResponse:
+        del body, headers, connect_timeout, read_timeout
+        if url != API_URL:
+            raise XaiError("offline xAI transport refuses any other URL")
+        content = json.dumps(
+            {
+                "model_id": "grok-4.3",
+                "proposals": [
+                    {
+                        "action": "BUY",
+                        "confidence": "0.35",
+                        "instrument_id": ticker,
+                        "reasoning": "offline fixture",
+                        "target_weight": "0.16666666",
+                    }
+                    for ticker in ("VWRP", "CUKX", "IGLT", "AGBP", "SGLN", "XSTR")
+                ],
+            }
+        )
+        payload = json.dumps(
+            {
+                "choices": [{"message": {"content": content}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 4, "cost_in_usd": "0.00000000"},
+            }
+        )
+        return HttpResponse(status=200, body=payload.encode("utf-8"))
+
+
+def _client(enable_xai: bool, dry_run: bool) -> XaiClient:
+    if os.environ.get("STERLING_XAI_OFFLINE") == "1":
+        return XaiClient(enabled=enable_xai, dry_run=dry_run, transport=_OfflineXai(), sleeper=lambda _delay: None)
+    return XaiClient(enabled=enable_xai, dry_run=dry_run)
+
+
 def healthcheck(path: Path) -> int:
     if not path.is_file():
         raise ResearchError("forward log does not exist")
@@ -189,7 +227,7 @@ def run_decision(
         if provider_name == "mock":
             envelope = MockGrokProvider(seed=1).complete(snapshot, prompt=prompt)
             return envelope.raw_response, envelope.model_id
-        xai = client or XaiClient(enabled=enable_xai, dry_run=dry_run)
+        xai = client or _client(enable_xai, dry_run)
         content, usage = xai.complete(prompt)
         usage_box["usage"] = usage
         _append_usage(log_path, usage, when=datetime.now(UTC))
@@ -334,10 +372,13 @@ def _live_inputs(
 
     boe_url = (
         "https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp"
-        "?csv.x=yes&Datefrom=01/Jan/2024&Dateto=now&SeriesCodes=XUDLUSS&CSVF=TN&UsingCodes=Y&VPD=Y&VFD=N"
+        "?csv.x=yes&Datefrom=01/Jan/2024&Dateto=now&SeriesCodes=XUDLUSS,XUDLERS"
+        "&CSVF=TN&UsingCodes=Y&VPD=Y&VFD=N"
     )
     now = datetime.now(UTC)
-    fx = {day: rate for day, rate in boe_usd_per_gbp(fetch_bytes(boe_url, _getter))}
+    rates = boe_columns(fetch_bytes(boe_url, _getter))
+    fx = rates.get("XUDLUSS", {})
+    eur = rates.get("XUDLERS", {})
     closes: list[PriceObservation] = []
     navs: list[PriceObservation] = []
     opens: list[tuple[str, str, str, str, str]] = []
@@ -383,17 +424,24 @@ def _live_inputs(
         published = first_seen_many(cache / "first_observed.json", [identity], datetime.now(UTC))[identity]
         navs.append(PriceObservation("VWRP", item.valuation_date, price, published, "vanguard-nav"))
         nav_units["VWRP"] = item.quoted_in
-    justetf_url = "https://www.justetf.com/api/etfs/LU0321464652/quote?locale=en&currency=GBP"
-    xstr_rows = list(justetf_quotes("XSTR", fetch_bytes(justetf_url, _getter)))
-    xstr_seen = first_seen_many(
+    xetra_url = "https://query1.finance.yahoo.com/v8/finance/chart/DXS1.DE?interval=1d&range=2y"
+    xetra_rows = []
+    for bar in yahoo_bars("XSTR", fetch_bytes(xetra_url, _getter)):
+        if bar.quoted_in != "EUR" or bar.close_price is None or bar.close_at > now:
+            continue
+        price = usd_on_valuation_date(bar.close_price, bar.session, eur)
+        if price is None:
+            continue
+        xetra_rows.append((bar, price))
+    xetra_seen = first_seen_many(
         cache / "first_observed.json",
-        [f"{item.source}|XSTR|{item.valuation_date.isoformat()}|{item.price}" for item in xstr_rows],
+        [f"yahoo-xetra-eur|XSTR|{bar.session.isoformat()}|{price}" for bar, price in xetra_rows],
         datetime.now(UTC),
     )
-    for item in xstr_rows:
-        identity = f"{item.source}|XSTR|{item.valuation_date.isoformat()}|{item.price}"
-        navs.append(PriceObservation("XSTR", item.valuation_date, item.price, xstr_seen[identity], item.source))
-        nav_units["XSTR"] = "GBP"
+    for bar, price in xetra_rows:
+        identity = f"yahoo-xetra-eur|XSTR|{bar.session.isoformat()}|{price}"
+        navs.append(PriceObservation("XSTR", bar.session, price, xetra_seen[identity], "yahoo-xetra-eur"))
+        nav_units["XSTR"] = "EUR"
     _remember_notes(closes, navs, close_units, nav_units)
     return closes, navs, opens
 
@@ -513,8 +561,8 @@ def _assessed(
     quotes: list[InstrumentQuote] = []
     kept: list[PriceObservation] = []
     for ticker in APPROVED_UNIVERSE:
-        market = any(item.source.startswith("justetf") for item in secondary if item.instrument_id == ticker)
-        comparison = "market" if market else "nav"
+        xetra = any(item.source == "yahoo-xetra-eur" for item in secondary if item.instrument_id == ticker)
+        comparison = "xetra_fx" if xetra else "nav"
         verdict = assess_instrument(
             ticker,
             primary,

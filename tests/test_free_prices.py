@@ -125,7 +125,7 @@ def test_justetf_quote_is_labelled_as_a_market_print() -> None:
             "quoteTradingVenue": "XETRA",
         }
     ).encode()
-    rows = justetf_quotes("XSTR", payload)
+    rows = justetf_quotes("XSTR", payload, quoted_in="GBP")
     assert [item.valuation_date.isoformat() for item in rows] == ["2026-11-10", "2026-11-09"]
     assert rows[0].source == "justetf-xetra"
     assert rows[0].quoted_in == "GBP"
