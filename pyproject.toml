@@ -25,6 +25,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 "sterling.rules" = ["data/*.json"]
 "sterling.risk" = ["data/*.json"]
+"sterling.research" = ["data/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

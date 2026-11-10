@@ -22,14 +22,20 @@ def _equity(value: object, label: str) -> Decimal:
 
 
 def per_trade_planned_risk(equity: object, rules: DeskRules) -> Decimal:
-    """min(0.5% of current equity, the 2.50 GBP absolute ceiling), in pence."""
+    """min(0.5% of current equity, the £2.50 operational per-trade risk cap).
+
+    The £2.50 figure is planned risk, not a position-size limit.
+    """
     current = _equity(equity, "equity")
     raw = current * rules.per_trade_equity_fraction
     return quantize_money(min(raw, rules.per_trade_absolute_ceiling))
 
 
 def daily_loss_threshold(day_opening_equity: object, rules: DeskRules) -> Decimal:
-    """min(1% of day-opening equity, the 5.00 GBP absolute ceiling), in pence."""
+    """min(1% of day-opening equity, the £5.00 operational daily-loss cap).
+
+    The £5.00 figure is a loss threshold, not a position-size limit.
+    """
     opening = _equity(day_opening_equity, "day_opening_equity")
     raw = opening * rules.daily_loss_equity_fraction
     return quantize_money(min(raw, rules.daily_loss_absolute_ceiling))

@@ -1,0 +1,44 @@
+{
+  "schema": "research-risk-v0",
+  "status": "APPROVED FOR RESEARCH SIMULATION ONLY by owner 2026-11-09; not operational",
+  "owner_approved": false,
+  "research_simulation_only": true,
+  "owner": "Daniel Pawela",
+  "purpose": "Research-only simulator limits. Not Desk Rules v0.2 and not the Stage 2 Gate 1 policy. These numbers are not the operational GBP 2.50 per-trade risk cap or the GBP 5.00 daily-loss cap. Those operational figures are risk and loss caps, not position-size limits. They do not authorise execution.",
+  "execution_permission": "NOT_ISSUED",
+  "not_operational_policy": true,
+  "account": {
+    "currency": "GBP",
+    "research_starting_nav_gbp": "10000.00",
+    "note": "Illustration assumption only. Not the operational simulated desk account of GBP 500.00."
+  },
+  "constraints": {
+    "long_only": true,
+    "shorts": false,
+    "leverage": false,
+    "borrowing": false,
+    "max_gross_exposure": "1",
+    "cash_weight_min": "0",
+    "cash_weight_max": "1",
+    "cash_always_allowed": true,
+    "max_single_instrument_weight": "0.50",
+    "max_asset_class_weight": {
+      "equity": "0.80",
+      "bond": "0.80",
+      "commodity": "0.20",
+      "cash_proxy": "1",
+      "ultrashort_bond": "0.40"
+    },
+    "min_trade_notional_gbp": "25.00",
+    "max_one_way_turnover": "0.50",
+    "rebalance": "monthly",
+    "single_instrument_cap_exempt_asset_classes": ["cash_proxy"],
+    "risk_off_turnover_exception": true,
+    "notes": [
+      "One-way turnover is 0.5 * sum of absolute instrument-weight changes. Cash is the residual and is not double-counted. Moving from literal cash to 100% in one risky instrument is 0.50 and is allowed. Swapping one fully invested risky instrument for another is 1.00 and is scaled.",
+      "PROPOSED XSTR exception: asset class cash_proxy may exceed the 50% single-instrument cap, up to its class cap of 100%. XSTR remains an investment with dealing costs, spreads, distributions, and swap counterparty risk. It is not literal cash and it is not a guaranteed rate.",
+      "PROPOSED risk-off exception: if every non-cash-proxy weight is unchanged or lower, the turnover cap does not scale the rebalance. A full exit from equity, bonds, or gold into XSTR or literal cash can complete in one rebalance. Any increase in a non-cash-proxy weight keeps the 50% cap on the whole rebalance.",
+      "The 0.20 commodity cap applies to SGLN. It is a placeholder, not an approved allocation."
+    ]
+  }
+}

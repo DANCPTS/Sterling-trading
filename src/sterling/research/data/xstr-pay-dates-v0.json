@@ -1,0 +1,26 @@
+{
+  "schema": "xstr-pay-dates-v0",
+  "isin": "LU0321464652",
+  "note": "Ex-date to payment date for Xtrackers II GBP Overnight Rate Swap UCITS ETF 1D. Amounts are not stored here; the price file supplies the distribution. Dates through 2016 are from the DWS fund page dividend table, retrieved 2026-11-09. Earlier dates are from the same table as repeated on Investing.com. A distribution with no row here uses the 15-session lag.",
+  "payments": [
+    {"ex_date": "2012-07-25", "pay_date": "2012-07-30", "source": "investing.com dividend table"},
+    {"ex_date": "2013-07-25", "pay_date": "2013-07-31", "source": "investing.com dividend table"},
+    {"ex_date": "2014-07-24", "pay_date": "2014-07-31", "source": "investing.com dividend table"},
+    {"ex_date": "2015-04-02", "pay_date": "2015-04-15", "source": "investing.com dividend table"},
+    {"ex_date": "2016-04-04", "pay_date": "2016-04-13", "source": "dws fund page"},
+    {"ex_date": "2017-04-06", "pay_date": "2017-04-19", "source": "dws fund page"},
+    {"ex_date": "2018-04-09", "pay_date": "2018-04-18", "source": "dws fund page"},
+    {"ex_date": "2019-04-11", "pay_date": "2019-04-18", "source": "dws fund page"},
+    {"ex_date": "2020-06-17", "pay_date": "2020-06-22", "source": "dws fund page"},
+    {"ex_date": "2021-04-28", "pay_date": "2021-05-06", "source": "dws fund page"},
+    {"ex_date": "2022-08-10", "pay_date": "2022-08-25", "source": "dws fund page"},
+    {"ex_date": "2023-02-08", "pay_date": "2023-02-24", "source": "dws fund page"},
+    {"ex_date": "2023-08-23", "pay_date": "2023-09-07", "source": "dws fund page"},
+    {"ex_date": "2024-02-21", "pay_date": "2024-03-07", "source": "dws fund page"},
+    {"ex_date": "2024-08-21", "pay_date": "2024-09-05", "source": "dws fund page"},
+    {"ex_date": "2025-02-19", "pay_date": "2025-03-06", "source": "dws fund page"},
+    {"ex_date": "2025-08-20", "pay_date": "2025-09-04", "source": "dws fund page"},
+    {"ex_date": "2026-02-18", "pay_date": "2026-03-05", "source": "dws fund page"},
+    {"ex_date": "2026-08-19", "pay_date": "2026-09-03", "source": "dws fund page"}
+  ]
+}
