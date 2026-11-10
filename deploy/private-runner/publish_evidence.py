@@ -18,8 +18,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from sterling.research.fx.grok_forward import ProposalLog
+from sterling.research.grok.verify import verify_evidence_lane
 
-LOG_NAME = "evidence/forward.jsonl"
+LOGS = {
+    "evidence/forward.jsonl": "forward",
+    "evidence/mock/forward.jsonl": "mock",
+}
 
 
 def publish(clone: Path, *, branch: str = "evidence", remote: str = "origin") -> str:
@@ -33,20 +37,43 @@ def publish(clone: Path, *, branch: str = "evidence", remote: str = "origin") ->
         except BlockingIOError:
             return "skipped_locked"
         _git(clone, "fetch", remote, check=False)
-        local = clone / LOG_NAME
-        if not local.is_file():
+        present = [name for name in LOGS if (clone / name).is_file()]
+        if not present:
             raise RuntimeError("local evidence log is missing")
-        remote_text = _remote_log(clone, remote, branch)
-        merged = _merge(remote_text, local.read_text(encoding="utf-8"), clone / "evidence")
+        merged = {
+            name: _merge(
+                _remote_log(clone, remote, branch, name),
+                (clone / name).read_text(encoding="utf-8"),
+                clone / "evidence" / name.replace("/", "-"),
+            )
+            for name in present
+        }
+        states = {
+            name: (clone / name).with_suffix(".state.json").read_text(encoding="utf-8")
+            for name in present
+            if (clone / name).with_suffix(".state.json").is_file()
+        }
+        observed = clone / "evidence" / "first_observed.json"
+        observed_text = observed.read_text(encoding="utf-8") if observed.is_file() else None
         if _remote_exists(clone, remote, branch):
             _git(clone, "checkout", "-f", "-B", branch, f"{remote}/{branch}")
         else:
             _git(clone, "checkout", "-B", branch)
-        local.parent.mkdir(parents=True, exist_ok=True)
-        local.write_text(merged, encoding="utf-8")
-        ProposalLog(local).verify()
-        _git(clone, "add", LOG_NAME)
-        if (clone / "evidence" / "first_observed.json").is_file():
+        for name, text in merged.items():
+            local = clone / name
+            local.parent.mkdir(parents=True, exist_ok=True)
+            local.write_text(text, encoding="utf-8")
+            log = ProposalLog(local)
+            log.verify()
+            verify_evidence_lane(log.records(), lane=LOGS[name])
+            _git(clone, "add", name)
+            if name in states:
+                state = local.with_suffix(".state.json")
+                state.write_text(states[name], encoding="utf-8")
+                _git(clone, "add", str(state.relative_to(clone)))
+        if observed_text is not None:
+            observed.parent.mkdir(parents=True, exist_ok=True)
+            observed.write_text(observed_text, encoding="utf-8")
             _git(clone, "add", "evidence/first_observed.json")
         if subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=clone, check=False).returncode == 0:
             return "unchanged"
@@ -88,9 +115,9 @@ def _merge(remote_text: str, local_text: str, folder: Path) -> str:
     return remote_path.read_text(encoding="utf-8")
 
 
-def _remote_log(clone: Path, remote: str, branch: str) -> str:
+def _remote_log(clone: Path, remote: str, branch: str, name: str) -> str:
     show = subprocess.run(
-        ["git", "show", f"{remote}/{branch}:{LOG_NAME}"],
+        ["git", "show", f"{remote}/{branch}:{name}"],
         cwd=clone,
         check=False,
         capture_output=True,

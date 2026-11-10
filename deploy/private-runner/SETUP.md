@@ -21,11 +21,13 @@ Do not copy the workflow into `.github/workflows` of the public repo.
    The prepaid balance is the only money the key can spend. This repository cannot check that setting.
 7. Enable GitHub failure emails for the private repo (Settings → Notifications).
 8. Create a Healthchecks check and put its URL in `HEALTHCHECKS_PING_URL`.
-9. Run `python deploy/private-runner/verify_from_log.py --log evidence/forward.jsonl` on a known log.
-   It recomputes the hash chain and the paper state from the log. It does not trust `*.state.json`.
+9. Run `python deploy/private-runner/verify_from_log.py --log evidence/forward.jsonl` on the genuine log,
+   and the same command on `evidence/mock/forward.jsonl` for a mock log.
+   It recomputes the hash chain and the paper state from that log. It does not trust `*.state.json`.
+   A mock record in `evidence/forward.jsonl`, or a forward record in `evidence/mock/forward.jsonl`, is rejected.
 10. OpenTimestamps stamping is off. `--stamp` raises and does not contact a server.
 11. Only after those steps, remove `if: false` from the private workflow. Leave the cron line commented until you want a schedule.
-12. For the first real call, run the workflow once with input `provider=xai`. That is one paid request. Then read `evidence/forward.jsonl` for `model_usage`, including `cost_in_usd_ticks`, and do not dispatch it again until you have checked that cost. The command the job runs is `python scripts/run_weekly_decision.py --provider xai --enable-xai --fetch-free --cache evidence --log evidence/forward.jsonl`.
+12. Mock dispatch writes `evidence/mock/forward.jsonl` and `evidence/mock/forward.state.json`. It does not reserve a week in the genuine log. The first real call is one manual dispatch with input `provider=xai`. That writes `evidence/forward.jsonl`. Then read that file for `model_usage`, including `cost_in_usd_ticks`, and do not dispatch it again until you have checked that cost.
 
 Missed weeks are appended as `missed_week` records. They are not backfilled with a decision or a trade.
 

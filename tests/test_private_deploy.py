@@ -65,6 +65,26 @@ def _private(tmp: Path) -> Path:
     return clone
 
 
+def test_mock_and_forward_logs_reject_each_other(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import UTC, datetime
+
+    from sterling.research.errors import ResearchError
+    from sterling.research.grok.verify import verify_evidence_lane
+
+    monkeypatch.setenv("STERLING_EVIDENCE_LANE", "mock")
+    mock = ProposalLog(tmp_path / "mock.jsonl")
+    mock.create(now=datetime(2026, 11, 2, 12, 0, tzinfo=UTC))
+    verify_evidence_lane(mock.records(), lane="mock")
+    with pytest.raises(ResearchError, match="mock record"):
+        verify_evidence_lane(mock.records(), lane="forward")
+    monkeypatch.setenv("STERLING_EVIDENCE_LANE", "forward")
+    forward = ProposalLog(tmp_path / "forward.jsonl")
+    forward.create(now=datetime(2026, 11, 2, 12, 0, tzinfo=UTC))
+    verify_evidence_lane(forward.records(), lane="forward")
+    with pytest.raises(ResearchError, match="forward record"):
+        verify_evidence_lane(forward.records(), lane="mock")
+
+
 def test_provider_selection_never_falls_back_silently() -> None:
     module = _load("run_private", RUNNER / "run_private.py")
     assert module.select_provider("schedule", "mock") == "xai"
@@ -117,12 +137,15 @@ def test_pinned_checkout_two_runs_and_a_failed_run(tmp_path: Path, monkeypatch: 
     assert module.run(args) == 0
     again = module.run(args)
     assert again == 0
-    log_path = private / "evidence" / "forward.jsonl"
-    text = log_path.read_text(encoding="utf-8")
+    mock_path = private / "evidence" / "mock" / "forward.jsonl"
+    forward_path = private / "evidence" / "forward.jsonl"
+    text = mock_path.read_text(encoding="utf-8")
+    assert not forward_path.exists()
     assert SECRET_KEY not in text
     assert "secret-token-77" not in text
+    assert '"evidence_lane":"mock"' in text
     assert text.count(sha) >= 2
-    assert ProposalLog(log_path).verify() >= 2
+    assert ProposalLog(mock_path).verify() >= 2
     before = text
     monkeypatch.delenv("XAI_API_KEY")
     failed = module.main(
@@ -140,7 +163,8 @@ def test_pinned_checkout_two_runs_and_a_failed_run(tmp_path: Path, monkeypatch: 
         ]
     )
     assert failed == 1
-    assert log_path.read_text(encoding="utf-8") == before
+    assert mock_path.read_text(encoding="utf-8") == before
+    assert not forward_path.exists()
     monkeypatch.setenv("XAI_API_KEY", SECRET_KEY)
     monkeypatch.setenv("STERLING_XAI_OFFLINE", "1")
     paid = module.run(
@@ -157,13 +181,16 @@ def test_pinned_checkout_two_runs_and_a_failed_run(tmp_path: Path, monkeypatch: 
             str(pin),
             "--allow-offline-xai",
             "--as-of",
-            "2026-11-16T16:30:00+00:00",
+            "2026-11-02T16:30:00+00:00",
         ]
     )
     assert paid == 0
-    stored = log_path.read_text(encoding="utf-8")
+    assert mock_path.read_text(encoding="utf-8") == before
+    stored = forward_path.read_text(encoding="utf-8")
     assert SECRET_KEY not in stored
     assert "api.x.ai" not in stored
+    assert '"evidence_lane":"forward"' in stored
+    assert '"evidence_lane":"mock"' not in stored
     usage = [json.loads(line) for line in stored.splitlines() if '"model_usage"' in line]
-    assert usage
-    assert usage[-1]["cost_in_usd_ticks"] == 0
+    assert len(usage) == 1
+    assert usage[0]["cost_in_usd_ticks"] == 0

@@ -69,8 +69,11 @@ def run(argv: list[str] | None = None) -> int:
         raise RuntimeError("checked out app does not match the pinned SHA")
     provider = select_provider(args.event, args.provider)
     require_xai_key(provider)
+    lane = "mock" if provider == "mock" else "forward"
+    log_name = "evidence/mock/forward.jsonl" if lane == "mock" else "evidence/forward.jsonl"
     env = os.environ.copy()
     env["STERLING_APP_SHA"] = pin
+    env["STERLING_EVIDENCE_LANE"] = lane
     if not args.allow_offline_xai:
         env.pop("STERLING_XAI_OFFLINE", None)
     command = [
@@ -79,7 +82,7 @@ def run(argv: list[str] | None = None) -> int:
         "--provider",
         provider,
         "--log",
-        str(args.evidence / "evidence" / "forward.jsonl"),
+        str(args.evidence / log_name),
         "--cache",
         str(args.evidence / "evidence"),
     ]
@@ -93,7 +96,7 @@ def run(argv: list[str] | None = None) -> int:
     if completed.returncode != 0:
         raise RuntimeError("weekly decision failed")
     verify = subprocess.run(
-        [sys.executable, str(ROOT / "verify_from_log.py"), "--log", str(args.evidence / "evidence" / "forward.jsonl")],
+        [sys.executable, str(ROOT / "verify_from_log.py"), "--log", str(args.evidence / log_name)],
         check=False,
         env={**env, "PYTHONPATH": str(args.app / "src")},
     )

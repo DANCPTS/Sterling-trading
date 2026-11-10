@@ -65,6 +65,20 @@ def verify_modes(records: Sequence[Mapping[str, object]], *, now: datetime) -> s
     return mode
 
 
+def verify_evidence_lane(records: Sequence[Mapping[str, object]], *, lane: str) -> None:
+    """Reject a mock record in the forward log, and a forward record in the mock log."""
+    if lane not in {"mock", "forward"}:
+        raise ResearchError("unknown evidence lane")
+    for record in records:
+        value = record.get("evidence_lane")
+        if lane == "forward" and value == "mock":
+            raise ResearchError("mock record in the forward log")
+        if lane == "mock" and value != "mock":
+            raise ResearchError("forward record in the mock log")
+        if isinstance(value, str) and value != lane:
+            raise ResearchError("evidence log mixes mock and forward records")
+
+
 def chronological_weeks(records: Sequence[Mapping[str, object]]) -> tuple[tuple[str, str], ...]:
     """Week order is the week key, not the order the lines were appended.
 

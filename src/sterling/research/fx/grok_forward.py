@@ -25,6 +25,15 @@ from sterling.research.errors import ResearchError, ResearchIsolationError
 SCHEMA = "fx-forward-log-v1"
 
 
+def _evidence_lane() -> str | None:
+    value = os.environ.get("STERLING_EVIDENCE_LANE", "").strip()
+    if not value:
+        return None
+    if value not in {"mock", "forward"}:
+        raise ResearchError("STERLING_EVIDENCE_LANE must be mock or forward")
+    return value
+
+
 def _pinned_app_sha() -> str | None:
     """The reviewed public commit, when the private runner sets STERLING_APP_SHA."""
     value = os.environ.get("STERLING_APP_SHA", "").strip().lower()
@@ -155,6 +164,9 @@ class ProposalLog:
         pinned = _pinned_app_sha()
         if pinned is not None:
             created["app_sha"] = pinned
+        lane = _evidence_lane()
+        if lane is not None:
+            created["evidence_lane"] = lane
         record = _seal(created, GENESIS)
         line = canonical(record) + "\n"
         flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
@@ -275,6 +287,9 @@ class ProposalLog:
         pinned = _pinned_app_sha()
         if pinned is not None and "app_sha" not in safe:
             safe["app_sha"] = pinned
+        lane = _evidence_lane()
+        if lane is not None and "evidence_lane" not in safe:
+            safe["evidence_lane"] = lane
         body: dict[str, object] = {"schema": SCHEMA, "record_type": record_type, "timestamp_utc": _iso(stamped)}
         for key, value in safe.items():
             if key in body or key in {"prev_hash", "record_hash"}:
