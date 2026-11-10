@@ -19,6 +19,7 @@ from pathlib import Path
 
 from sterling.research.bars import Bar, prepare_series
 from sterling.research.calendar import xlon
+from sterling.research.cash_benchmark import cash_sleeve_bars, write_cash_benchmark
 from sterling.research.costs import research_cost_model
 from sterling.research.engine import SimulationResult, _run_path, simulate
 from sterling.research.errors import ResearchError
@@ -27,7 +28,6 @@ from sterling.research.loaders import read_ohlcv_csv
 from sterling.research.metrics import NavRow, Performance, performance, sharpe_ratio
 from sterling.research.money import ZERO
 from sterling.research.proxies import (
-    compound_annual_percent,
     distribution_total_return,
     drop_isolated_spikes,
     hedged_return_index,
@@ -208,9 +208,7 @@ def _prepared_levels(path: Path) -> list[tuple[date, Decimal]]:
     # The dividend belongs on its own session. Using the previous bar's dividend
     # leaves a one-day hole the size of the distribution.
     if prepared.dividend_mode == "reinvest":
-        return list(
-            distribution_total_return([(bar.session, bar.close, bar.dividend) for bar in prepared.bars])
-        )
+        return list(distribution_total_return([(bar.session, bar.close, bar.dividend) for bar in prepared.bars]))
     return [(bar.session, bar.close) for bar in prepared.bars]
 
 
@@ -286,21 +284,18 @@ def build_sleeves() -> dict[str, list[Bar]]:
     sgln = _index_on_calendar(sgln_raw)
     gold_levels = _chain(((gold_gbp, date(2011, 4, 8), "gc_futures_proxy"), (sgln, date(2099, 1, 1), "sgln_actual")))
 
-    sonia_index = compound_annual_percent([(day, sonia[day]) for day in sessions if day in sonia])
-    xstr = _prepared_levels(YAHOO / "XSTR.csv")
-    cash_levels = _chain(((sonia_index, xstr[0][0], "sonia_proxy"), (xstr, date(2099, 1, 1), "xstr_actual")))
-
+    cash_bars, _xstr_start = cash_sleeve_bars()
     series = {
         "GLOBAL": global_levels,
         "UK": uk_levels,
         "GILT": gilt,
         "GAGG": gagg_levels,
         "GOLD": gold_levels,
-        "CASH": cash_levels,
     }
-    # Keep a documented note by attaching nothing; the printer states the sources.
     del blend_gbp
-    return {name: _bars_from_levels(levels) for name, levels in series.items()}
+    built = {name: _bars_from_levels(levels) for name, levels in series.items()}
+    built["CASH"] = cash_bars
+    return built
 
 
 def _chain(pieces: Sequence[tuple[Sequence[tuple[date, Decimal]], date, str]]) -> list[tuple[date, Decimal]]:
@@ -387,14 +382,17 @@ def _run(
 
 
 def _balanced(bars: Mapping[str, tuple[Bar, ...]]) -> tuple[tuple[NavRow, ...], Performance, Decimal]:
-    instruments = {name: _sleeve(name, asset) for name, asset in (
-        ("GLOBAL", "equity"),
-        ("UK", "equity"),
-        ("GILT", "bond"),
-        ("GAGG", "bond"),
-        ("GOLD", "commodity"),
-        ("CASH", "cash_proxy"),
-    )}
+    instruments = {
+        name: _sleeve(name, asset)
+        for name, asset in (
+            ("GLOBAL", "equity"),
+            ("UK", "equity"),
+            ("GILT", "bond"),
+            ("GAGG", "bond"),
+            ("GOLD", "commodity"),
+            ("CASH", "cash_proxy"),
+        )
+    }
     prepared = {
         name: prepare_series(
             ticker=name,
@@ -582,6 +580,7 @@ def _line(result: SimulationResult, balanced_sharpe: str) -> list[str]:
 
 
 def format_history() -> str:
+    export_path = write_cash_benchmark()
     sleeves = build_sleeves()
     levels = {name: [(bar.session, bar.close) for bar in bars] for name, bars in sleeves.items()}
     lines = [
@@ -605,11 +604,19 @@ def format_history() -> str:
         "AGBP after that date is the real GBP-hedged ETF and is not converted again.",
         "GOLD: Yahoo GC=F COMEX futures in USD converted with XUDLUSS until SGLN on 2011-04-08. Not LBMA spot and not an ETC. "
         "Roll bias is not measured. FRED LBMA gold was not retrieved.",
-        "CASH: Bank of England IUDSOIA (SONIA, percent) compounded on a 365.25-day year until XSTR, "
-        "then XSTR with the distribution added on the ex-date. Its adjusted close is flat. "
-        "SONIA's 2018 reform means the rate is not one unchanged instrument. "
-        "The index is not a deposit and not XSTR's fee.",
-        "The operational £2.50 per-trade figure and the £5.00 daily figure are risk and loss caps, not position-size limits.",
+        "CASH: Bank of England IUDSOIA (SONIA) compounded until XSTR, then the traded XSTR price. "
+        "On an ex-date the holder accrues a receivable, counted in NAV and not spendable. "
+        "Cash arrives on the issuer pay date when one is known, otherwise the 15th XLON session after the ex-date. "
+        "Reinvestment is the next session, with dealing costs. "
+        "VWRL, IGLT and AGBP keep adjusted-close total return, so their dividends are not accrued again. "
+        "SONIA's 2018 reform means the rate is not one unchanged instrument. The index is not a deposit.",
+        "March 2020 XSTR: DWS performance chart (etf.deutsche-am.com, ISIN LU0321464652, retrieved 2026-11-09) "
+        "shows NAV 191.158812 on 13 Mar and 191.160173 on 17 Mar, and the DB SONIA TR index also rose. "
+        "The Yahoo LSE close fell from 182.56 to 179.645 pounds. That is a traded-price gap to NAV, not a NAV loss. "
+        "The free DWS Excel export contained no NAV rows. A second exchange price was not freely available.",
+        "£2.50/£5 are operational risk/loss caps, not position-size limits.",
+        f"Cash benchmark for reuse: {export_path.as_posix()} (gitignored). "
+        "total_return_index counts the distribution on the ex-date. It is not the simulated reinvestment.",
         "FX source: Bank of England XUDLUSS, daily USD per GBP, carried onto XLON sessions when the print is missing.",
         "",
         "Proxy limitations:",
@@ -635,6 +642,22 @@ def format_history() -> str:
     for name, series in levels.items():
         if not series:
             continue
+        if name == "CASH":
+            accrual = distribution_total_return([(bar.session, bar.close, bar.dividend or ZERO) for bar in sleeves["CASH"]])
+            lines.append(
+                f"{name} {accrual[0][0].isoformat()}..{accrual[-1][0].isoformat()} "
+                f"accrual_full_change {_period_return(accrual, accrual[0][0], accrual[-1][0])}"
+            )
+            lines.append(
+                "  Traded close, which falls on ex-dates by the distribution: "
+                f"{_period_return(series, series[0][0], series[-1][0])}."
+            )
+            lines.append("  SONIA index before XSTR, then the traded XSTR price. Not a deposit.")
+            lines.append(
+                "  Accrual index counts the distribution on the ex-date. "
+                f"Peak to trough: {_peak_to_trough(accrual, accrual[0][0], accrual[-1][0])}."
+            )
+            continue
         lines.append(
             f"{name} {series[0][0].isoformat()}..{series[-1][0].isoformat()} "
             f"full_change {_period_return(series, series[0][0], series[-1][0])}"
@@ -649,12 +672,6 @@ def format_history() -> str:
                 lines.append(f"  from {first.isoformat()} real_etf {_period_return(series, first, series[-1][0])}")
         if name == "GILT":
             lines.append("  real ETF only; no proxy stretch")
-        if name == "CASH":
-            lines.append("  SONIA index before XSTR, then XSTR. Not a deposit.")
-            lines.append(
-                "  SONIA before the splice does not fall. XSTR distributions are added on the ex-date. "
-                f"Cash-sleeve peak to trough: {_peak_to_trough(series, series[0][0], series[-1][0])}."
-            )
     lines.append("")
     lines.append("Peak to trough inside the window (GBP unless noted). This is why a 12-month return rule can miss a crash:")
     vwrp = _prepared_levels(YAHOO / "VWRP.csv")
