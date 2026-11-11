@@ -152,7 +152,7 @@ def test_hundred_percent_and_missing_price_and_two_weeks(tmp_path: Path, stamped
     assert book.cash > 0
     sessions = [WHEN.date() + timedelta(days=offset) for offset in range(10)]
     closes = {name: tuple((day, Decimal("100") + day.day) for day in sessions) for name in FUNDS}
-    table = benchmark_table(closes, sessions, deposit_rate=Decimal("0.03"))
+    table = benchmark_table(closes, sessions, sonia=((sessions[0], Decimal("3.50")),))
     assert table["schema"] == "sterling-performance-v1"
     assert table["system"] == "sterling-invest"
     assert {row["name"] for row in table["arms"]} == {

@@ -7,6 +7,7 @@ from datetime import date
 from decimal import Decimal
 
 from sterling.research.invest.book import Book, accrue_cash, apply_targets, mark
+from sterling.research.invest.cash_rate import cash_quote
 from sterling.research.invest.identity import INVEST_V2, performance_document
 from sterling.research.invest.schema import CASH, FUNDS
 from sterling.research.metrics import sharpe_ratio
@@ -65,18 +66,24 @@ def benchmark_table(
     closes: Mapping[str, Sequence[tuple[date, Decimal]]],
     sessions: Sequence[date],
     *,
-    deposit_rate: Decimal,
+    sonia: Sequence[tuple[date, Decimal]],
 ) -> dict[str, object]:
-    """Replay frozen rules and the static mixes on the same sessions and costs."""
+    """Replay frozen rules and the static mixes on the same sessions, costs and SONIA rate."""
     arms = [
-        _static("buy_and_hold_vwrp", {"VWRP": Decimal(1)}, closes, sessions, deposit_rate),
-        _static("equal_weight", {name: Decimal(1) / Decimal(len(FUNDS)) for name in FUNDS}, closes, sessions, deposit_rate),
-        _static("sixty_forty", {"VWRP": Decimal("0.60"), "IGLT": Decimal("0.40")}, closes, sessions, deposit_rate),
-        _cash_only(sessions, deposit_rate),
-        _frozen("etf_trend", _FROZEN_TREND, closes, sessions, deposit_rate),
-        _frozen("etf_dual_momentum", _FROZEN_DUAL, closes, sessions, deposit_rate),
+        _static("buy_and_hold_vwrp", {"VWRP": Decimal(1)}, closes, sessions, sonia),
+        _static("equal_weight", {name: Decimal(1) / Decimal(len(FUNDS)) for name in FUNDS}, closes, sessions, sonia),
+        _static("sixty_forty", {"VWRP": Decimal("0.60"), "IGLT": Decimal("0.40")}, closes, sessions, sonia),
+        _cash_only(sessions, sonia),
+        _frozen("etf_trend", _FROZEN_TREND, closes, sessions, sonia),
+        _frozen("etf_dual_momentum", _FROZEN_DUAL, closes, sessions, sonia),
     ]
     return performance_document(experiment=INVEST_V2, arms=arms)
+
+
+def _accrue(book: Book, sonia: Sequence[tuple[date, Decimal]], session: date) -> None:
+    quote = cash_quote(sonia, session)
+    if quote is not None and quote.annual_decimal > 0:
+        accrue_cash(book, quote.annual_decimal)
 
 
 def _static(
@@ -84,12 +91,12 @@ def _static(
     weights: dict[str, Decimal],
     closes: Mapping[str, Sequence[tuple[date, Decimal]]],
     sessions: Sequence[date],
-    deposit_rate: Decimal,
+    sonia: Sequence[tuple[date, Decimal]],
 ) -> dict[str, object]:
     targets = {name: ZERO for name in FUNDS}
     targets.update(weights)
     targets[CASH] = Decimal(1) - sum(weights.values(), ZERO)
-    return _once(name, targets, closes, sessions, deposit_rate)
+    return _once(name, targets, closes, sessions, sonia)
 
 
 def _once(
@@ -97,14 +104,13 @@ def _once(
     targets: dict[str, Decimal],
     closes: Mapping[str, Sequence[tuple[date, Decimal]]],
     sessions: Sequence[date],
-    deposit_rate: Decimal,
+    sonia: Sequence[tuple[date, Decimal]],
 ) -> dict[str, object]:
     book = Book()
     rows: list[tuple[date, Decimal]] = []
     invested = False
     for session in sessions:
-        if deposit_rate > 0:
-            accrue_cash(book, deposit_rate)
+        _accrue(book, sonia, session)
         prices = _on(closes, session)
         if not invested:
             tradable = {ticker for ticker in FUNDS if ticker in prices}
@@ -116,12 +122,11 @@ def _once(
     return summarise_arm(name, rows, trades=book.trades, costs=book.cumulative_costs)
 
 
-def _cash_only(sessions: Sequence[date], deposit_rate: Decimal) -> dict[str, object]:
+def _cash_only(sessions: Sequence[date], sonia: Sequence[tuple[date, Decimal]]) -> dict[str, object]:
     book = Book()
     rows: list[tuple[date, Decimal]] = []
     for session in sessions:
-        if deposit_rate > 0:
-            accrue_cash(book, deposit_rate)
+        _accrue(book, sonia, session)
         marked = mark(book, {}, session)
         if marked is not None:
             rows.append((session, marked[0]))
@@ -133,7 +138,7 @@ def _frozen(
     strategy: TrendFilter | DualMomentum,
     closes: Mapping[str, Sequence[tuple[date, Decimal]]],
     sessions: Sequence[date],
-    deposit_rate: Decimal,
+    sonia: Sequence[tuple[date, Decimal]],
 ) -> dict[str, object]:
     if not sessions:
         return summarise_arm(name, [], trades=0, costs=ZERO)
@@ -147,7 +152,7 @@ def _frozen(
     if targets[CASH] < 0:
         targets = {ticker: ZERO for ticker in FUNDS}
         targets[CASH] = Decimal(1)
-    return _once(name, targets, closes, sessions, deposit_rate)
+    return _once(name, targets, closes, sessions, sonia)
 
 
 def _on(closes: Mapping[str, Sequence[tuple[date, Decimal]]], session: date) -> dict[str, Decimal]:

@@ -136,6 +136,7 @@ def _valuation(book: Book, session: date, nav: Decimal) -> dict[str, object]:
         "cash_gbp": format(book.cash, "f"),
         "cumulative_costs_gbp": format(book.cumulative_costs, "f"),
         "cumulative_return": format(cumulative, "f"),
+        "daily_pnl_gbp": format(nav - previous, "f"),
         "drawdown": format(book.max_drawdown, "f"),
         "holdings": {name: format(book.quantity(name), "f") for name in FUNDS if book.quantity(name) > 0},
         "nav_gbp": format(nav, "f"),

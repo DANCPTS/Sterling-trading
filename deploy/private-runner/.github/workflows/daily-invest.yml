@@ -1,0 +1,47 @@
+# Disabled template. This file is NOT under the public repo's .github/workflows.
+# The job is forced off with `if: false`. There is no cron. This job never calls a model.
+name: daily-invest-mark
+on:
+  workflow_dispatch:
+    inputs:
+      session:
+        description: London session date YYYY-MM-DD. Leave blank to use today.
+        required: false
+        default: ""
+        type: string
+permissions:
+  contents: none
+concurrency:
+  group: weekly-forward-evidence
+  cancel-in-progress: false
+jobs:
+  mark:
+    if: false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          path: private
+          fetch-depth: 0
+      - id: pin
+        run: echo "sha=$(tr -d '[:space:]' < private/deploy/private-runner/pinned_app_sha.txt)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          repository: DANCPTS/Sterling-trading
+          ref: ${{ steps.pin.outputs.sha }}
+          path: app
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Settle, value, verify, and push
+        run: |
+          session="${{ inputs.session }}"
+          if [ -z "$session" ]; then session="$(date -u +%F)"; fi
+          python private/deploy/private-runner/run_daily.py \
+            --app app \
+            --evidence private \
+            --pin-file private/deploy/private-runner/pinned_app_sha.txt \
+            --session "$session" \
+            --lane forward

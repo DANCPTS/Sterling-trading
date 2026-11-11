@@ -12,7 +12,9 @@ from sterling.research.invest.registration import NO_TRADE_BAND, STARTING_CASH_G
 from sterling.research.invest.schema import CASH, FUNDS
 from sterling.research.money import ZERO, ZERO_MONEY, quantize_money, quantize_qty_down
 
-OCF_NOTE = "Exchange prices are already net of fund OCF. This book does not deduct OCF again."
+# Ongoing charges are already inside the exchange price. Deducting them again would
+# double-count. Spread, slippage and stamp still apply to simulated fills.
+OCF_NOTE = "Exchange prices are already net of fund OCF. This book deducts no further OCF."
 
 
 @dataclass
@@ -168,6 +170,31 @@ def apply_targets(
     return fills
 
 
+def trade_toward(
+    book: Book,
+    ticker: str,
+    target_weight: Decimal,
+    open_price: Decimal,
+    marks: dict[str, Decimal],
+    session: date,
+) -> list[dict[str, str]]:
+    """Trade one fund toward its target. Other names are not rescaled."""
+    current = weights_of(book, marks, session)
+    if current is None:
+        return []
+    if abs(target_weight - current.get(ticker, ZERO)) < NO_TRADE_BAND:
+        return []
+    nav = book.cash + sum((book.quantity(name) * marks.get(name, ZERO) for name in FUNDS), ZERO)
+    if nav <= 0 or open_price <= 0:
+        return []
+    target_qty = quantize_qty_down(target_weight * nav / open_price)
+    held = book.quantity(ticker)
+    model = research_cost_model(session)
+    if target_qty < held:
+        return _sell(book, ticker, held - target_qty, open_price, session, model)
+    return _buy(book, ticker, target_qty - held, open_price, session, model)
+
+
 def settle_pending(book: Book, prices: dict[str, Decimal], tradable: set[str], session: date) -> list[dict[str, str]]:
     if not book.pending:
         return []
@@ -246,6 +273,7 @@ def _fill_row(ticker: str, quote: TradeQuote, session: date) -> dict[str, str]:
         "fund": ticker,
         "fx_cost_gbp": format(quote.fx_cost_gbp, "f"),
         "notional_gbp": format(quote.notional_gbp, "f"),
+        "cash_delta_gbp": format(quote.cash_delta_gbp, "f"),
         "ocf_deducted_gbp": "0.00",
         "ocf_note": OCF_NOTE,
         "price_gbp": format(quote.exec_price_gbp, "f"),
