@@ -89,10 +89,34 @@ def test_disabled_and_dry_run_do_not_send(monkeypatch: pytest.MonkeyPatch) -> No
     format_block = built["response_format"]
     assert isinstance(format_block, dict)
     assert format_block["type"] == "json_schema"
+    schema = format_block["json_schema"]["schema"]
+    assert isinstance(schema, dict)
+    proposals = schema["properties"]["proposals"]["items"]["properties"]
+    assert "prompt_hash" not in proposals
+    assert "response_hash" not in proposals
     assert "tools" not in built
     assert "web_search" not in built
     assert "x_search" not in built
     assert request is None or "tools" not in request
+
+
+def test_model_is_not_required_to_echo_hashes() -> None:
+    body = {
+        "model_id": "grok-4.3",
+        "proposals": [
+            {
+                "action": "HOLD",
+                "confidence": "0.20",
+                "instrument_id": "VWRP",
+                "reasoning": "no new weight",
+            }
+        ],
+    }
+    parsed = parse_response(json.dumps(body), prompt_digest_value="a" * 64, response_digest="b" * 64)
+    assert parsed.model_id == "grok-4.3"
+    body["proposals"][0]["prompt_hash"] = "c" * 64
+    forged = parse_response(json.dumps(body), prompt_digest_value="a" * 64, response_digest="b" * 64)
+    assert forged.reason == "hash_mismatch"
 
 
 def test_retries_timeout_malformed_oversized_and_redaction(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
