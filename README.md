@@ -210,9 +210,10 @@ benchmarks on the same sessions, with next-session fills. See
 
 ```bash
 python scripts/run_mock_forward_test.py --output research-output/mock-forward
+python scripts/run_weekly_decision.py --demo-offline --as-of 2024-06-07T16:30:00+00:00 --log research-output/forward.jsonl
 ```
 
-The xAI class does not send a request. Desk Rules, the £2.50 per-trade risk
+The xAI client sends a request only when `--provider xai` and `--enable-xai` are both set and `XAI_API_KEY` is present. The default path is the mock provider. Desk Rules, the £2.50 per-trade risk
 cap, the £5 daily-loss cap, execution DENY, and the empty allowlist are
 unchanged. Those caps are risk and loss caps, not position-size limits.
 

@@ -29,9 +29,29 @@ and it does not submit an order.
 
 ```bash
 python scripts/run_mock_forward_test.py --output research-output/mock-forward
+python scripts/run_weekly_decision.py --demo-offline --as-of 2024-06-07T16:30:00+00:00 --log research-output/forward.jsonl
+python scripts/run_weekly_decision.py --healthcheck --log research-output/forward.jsonl
 ```
 
+The weekly entrypoint uses the mock provider unless `--provider xai --enable-xai` is set and `XAI_API_KEY` is present. `--dry-run` builds the xAI request and does not send it. There is no scheduled workflow in this public repo. A commented example sits in `docs/examples/weekly-decision.workflow.yml`. A disabled private-runner template is in `deploy/private-runner/` and does not run from here.
+
 That run is synthetic and offline. It is not evidence of an edge.
+
+## Clocks
+
+`forward` reads `datetime.now(UTC)` for the decision, the request, and the response. `recorded_at` is the time the line is written. `historical` and `demo` must name `--as-of`, and that date must not be the date the line is written. `simulated_clock` is an injected clock and the log says so. The verifier rejects a mixture of modes, a response before the request, and a forward decision in the future. Tests inject `TickingClock`. A live run does not.
+
+## Paper book
+
+Cash, positions, costs, receivables, the transaction list, and NAV are replayed from the hash-chained log. `*.state.json` is a cache. Each `state_commit` stores the hash of that replay. One ISO week gets one reserve. A second process in the same week does not call the provider and does not trade. The reserve is written before the call, so a crash does not leave a second billable attempt. Fills use the next session's price, on a later run. A missing scheduled week is a `missed_week` record, not a backfill.
+
+## Free prices
+
+VWRP, CUKX, IGLT, AGBP, SGLN, and XSTR opens and closes are read from the Yahoo chart through an injected getter. The bar timestamp is the London open and is not used as the close time. The close is available at 16:30 London. Yahoo `GBp` is divided by 100 for CUKX, SGLN, and XSTR. CUKX, IGLT, AGBP, and SGLN NAVs come from the iShares fund file. VWRP's NAV comes from the Vanguard UK professional page, in USD, converted with Bank of England XUDLUSS on that valuation date. XSTR's Xetra listing is DXS1 in EUR. A JustETF sterling figure for that listing is a converted display, not a native GBP Xetra trade, and is not a second source. The second print is the Yahoo DXS1.DE euro close, converted with Bank of England XUDLERS dated that session. The two sterling prices may differ by up to 0.5% because the euro fixing and the equity closes are not the same minute. If the euro quote or that day's rate is missing, XSTR is HOLD. The sheet or page date is the valuation date. Availability is `first_observed_at`, the UTC time this process first saw that value. An 08:00 London publication time is not used. A premium HOLDs a name at 10% or more, above 5% before 60 overlapping sessions, or when it is at least 1 percentage point and three standard deviations from that fund's own history. A 2% band is not used. VWRP and XSTR have no issuer file that answers here, so they HOLD. Tests never pass a live getter. Yahoo bytes are not written into this repo.
+
+## What is a ceiling and what the provider enforces
+
+The local token and dollar figures are a pre-send estimate (`estimate_tokens`, and the high `$5` / `$25` per million placeholders). They are not an invoice. The request sends `max_completion_tokens`, which caps visible output only. Reasoning tokens are billed separately and are not inside that cap; `reasoning_effort` is `low`. A 429 may be retried only while the per-run cap still has room, and each sent request counts. A connection refused before the request is sent may be retried and does not count. A read timeout or a 5xx after the request was sent is not retried. Prompt, completion, reasoning, cached tokens, and `cost_in_usd_ticks` are stored when the response includes them, including on errors. A prepaid balance and a `$0` invoiced limit are account settings. This repo cannot turn them on. See `deploy/private-runner/SETUP.md`.
 
 ## Snapshot the live trial needs
 

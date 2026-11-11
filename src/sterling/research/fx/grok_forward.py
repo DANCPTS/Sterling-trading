@@ -23,6 +23,27 @@ from typing import cast
 from sterling.research.errors import ResearchError, ResearchIsolationError
 
 SCHEMA = "fx-forward-log-v1"
+
+
+def _evidence_lane() -> str | None:
+    value = os.environ.get("STERLING_EVIDENCE_LANE", "").strip()
+    if not value:
+        return None
+    if value not in {"mock", "forward"}:
+        raise ResearchError("STERLING_EVIDENCE_LANE must be mock or forward")
+    return value
+
+
+def _pinned_app_sha() -> str | None:
+    """The reviewed public commit, when the private runner sets STERLING_APP_SHA."""
+    value = os.environ.get("STERLING_APP_SHA", "").strip().lower()
+    if not value:
+        return None
+    if len(value) != 40 or any(character not in "0123456789abcdef" for character in value):
+        raise ResearchError("STERLING_APP_SHA is not a commit SHA")
+    return value
+
+
 GENESIS = "0" * 64
 
 
@@ -139,10 +160,14 @@ class ProposalLog:
         if self.path.exists():
             raise ResearchError("forward log already exists; refusing to recreate it")
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        record = _seal(
-            {"schema": SCHEMA, "record_type": "log_created", "timestamp_utc": _iso(now)},
-            GENESIS,
-        )
+        created: dict[str, object] = {"schema": SCHEMA, "record_type": "log_created", "timestamp_utc": _iso(now)}
+        pinned = _pinned_app_sha()
+        if pinned is not None:
+            created["app_sha"] = pinned
+        lane = _evidence_lane()
+        if lane is not None:
+            created["evidence_lane"] = lane
+        record = _seal(created, GENESIS)
         line = canonical(record) + "\n"
         flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
         descriptor = os.open(self.path, flags, 0o644)
@@ -239,13 +264,32 @@ class ProposalLog:
         price_timestamps: Sequence[datetime] = (),
     ) -> None:
         """Append a snapshot, screen, or pre-registration record onto the same chain."""
-        if record_type not in {"snapshot", "screen", "preregistration"}:
+        if record_type not in {
+            "snapshot",
+            "screen",
+            "preregistration",
+            "model_usage",
+            "week_reserve",
+            "decision",
+            "fill",
+            "fill_skipped",
+            "order_cancelled",
+            "distribution",
+            "state_commit",
+            "missed_week",
+        }:
             raise ResearchError("forward log event type is not allowed")
         stamped = require_utc(timestamp_utc)
         _reject_prices(stamped, price_timestamps, strict=record_type != "snapshot")
         safe = _json_safe(dict(fields), record_type)
         if not isinstance(safe, dict):
             raise ResearchError("forward log fields must be an object")
+        pinned = _pinned_app_sha()
+        if pinned is not None and "app_sha" not in safe:
+            safe["app_sha"] = pinned
+        lane = _evidence_lane()
+        if lane is not None and "evidence_lane" not in safe:
+            safe["evidence_lane"] = lane
         body: dict[str, object] = {"schema": SCHEMA, "record_type": record_type, "timestamp_utc": _iso(stamped)}
         for key, value in safe.items():
             if key in body or key in {"prev_hash", "record_hash"}:

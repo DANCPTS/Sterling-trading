@@ -1,0 +1,65 @@
+# Disabled template. This file is NOT under the public repo's .github/workflows.
+# The job is forced off with `if: false`. The cron line is not active.
+# Uncommenting that cron makes event_name=schedule, which selects xai explicitly.
+name: weekly-forward-decision
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: mock unless xai is chosen. Schedule ignores this and uses xai.
+        required: false
+        default: mock
+        type: choice
+        options:
+          - mock
+          - xai
+  # schedule:
+  #   - cron: "30 16 * * 1"
+permissions:
+  contents: none
+concurrency:
+  group: weekly-forward-evidence
+  cancel-in-progress: false
+jobs:
+  decide:
+    if: false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          path: private
+          fetch-depth: 0
+      - id: pin
+        run: echo "sha=$(tr -d '[:space:]' < private/deploy/private-runner/pinned_app_sha.txt)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          repository: DANCPTS/Sterling-trading
+          ref: ${{ steps.pin.outputs.sha }}
+          path: app
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      # mock -> evidence/mock/forward.jsonl; xai -> evidence/forward.jsonl
+      - name: Decide, verify, and push evidence
+        env:
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          HEALTHCHECKS_PING_URL: ${{ secrets.HEALTHCHECKS_PING_URL }}
+        run: |
+          python private/deploy/private-runner/run_private.py \
+            --app app \
+            --evidence private \
+            --event "${{ github.event_name }}" \
+            --provider "${{ inputs.provider }}" \
+            --pin-file private/deploy/private-runner/pinned_app_sha.txt
+      - name: Ping Healthchecks
+        if: always()
+        env:
+          HEALTHCHECKS_PING_URL: ${{ secrets.HEALTHCHECKS_PING_URL }}
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            python private/deploy/private-runner/ping_healthchecks.py
+          else
+            python private/deploy/private-runner/ping_healthchecks.py --fail
+          fi

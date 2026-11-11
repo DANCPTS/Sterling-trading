@@ -1,0 +1,18 @@
+# Disabled example. This file is not in .github/workflows and will not run.
+# Do not copy it into GitHub Actions until the owner turns it on.
+# It has no schedule and no secrets. The weekly entrypoint defaults to the mock provider.
+#
+# name: weekly-forward-decision
+# on:
+#   workflow_dispatch:
+# jobs:
+#   decide:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v4
+#       - uses: actions/setup-python@v5
+#         with:
+#           python-version: "3.12"
+#       - run: python -m pip install -e .
+#       - run: python scripts/run_weekly_decision.py --demo-offline --log research-output/forward.jsonl
+#       - run: python scripts/run_weekly_decision.py --healthcheck --log research-output/forward.jsonl
