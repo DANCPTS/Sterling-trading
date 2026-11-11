@@ -23,11 +23,9 @@ API_PATH = "/v1/chat/completions"
 API_URL = "https://api.x.ai/v1/chat/completions"
 DEFAULT_MODEL = "grok-4.3"
 ENV_KEY = "XAI_API_KEY"
-# A 429 is the only HTTP status that may be retried, and only while the
-# per-run cap still has room. 5xx and read timeouts are not retried: the
-# request may already have been billed. Connection refusal before the
-# request is sent may be retried and is not counted as a sent request.
-RETRY_STATUSES = frozenset({429})
+# Any HTTP response may already have been billed, including 429. It is never
+# retried. Only a connection refusal before the request is sent may be
+# retried, and that attempt is not counted as a sent request.
 MAX_CONTENT_CHARS = 20000
 INPUT_USD_PER_MILLION = Decimal("5")
 OUTPUT_USD_PER_MILLION = Decimal("25")
@@ -114,9 +112,10 @@ class UsageRecord:
         "max_completion_tokens caps visible output only. Reasoning tokens are billed separately "
         "and are not inside that cap. A prepaid balance and a $0 invoiced limit are account settings."
     )
+    provider_request_id: str | None = None
 
     def as_log(self) -> dict[str, object]:
-        return {
+        fields: dict[str, object] = {
             "cached_tokens": self.cached_tokens,
             "cost_in_usd_ticks": self.cost_in_usd_ticks,
             "http_status": self.http_status,
@@ -129,6 +128,9 @@ class UsageRecord:
             "reasoning_tokens": self.reasoning_tokens,
             "request_hash": self.request_hash,
         }
+        if self.provider_request_id is not None:
+            fields["provider_request_id"] = self.provider_request_id
+        return fields
 
 
 class Transport(Protocol):
@@ -271,12 +273,11 @@ class XaiClient:
         return _parse_success(response, key=key, request_hash=request_hash, model=self.model, latency_ms=latency_ms)
 
     def _send(self, body: bytes, headers: Mapping[str, str], key: str) -> HttpResponse:
-        """Send once per billed attempt. Do not retry after the bytes may have left."""
+        """One billed response. A connection refusal before send may be retried."""
         delay = 0.5
-        last: HttpResponse | None = None
         for attempt in range(self.max_attempts):
             try:
-                last = self.transport.post(
+                response = self.transport.post(
                     url=API_URL,
                     body=body,
                     headers=headers,
@@ -284,7 +285,7 @@ class XaiClient:
                     read_timeout=self.read_timeout,
                 )
             except NotSent:
-                if attempt + 1 < self.max_attempts and self.calls_sent < self.max_calls:
+                if attempt + 1 < self.max_attempts:
                     self._sleep(delay)
                     delay *= 2
                     continue
@@ -293,14 +294,8 @@ class XaiClient:
                 self.calls_sent += 1
                 raise XaiTimeout(_redact("xAI read timed out after send. Not retried.", key)) from exc
             self.calls_sent += 1
-            if last.status in RETRY_STATUSES and self.calls_sent < self.max_calls and attempt + 1 < self.max_attempts:
-                self._sleep(delay)
-                delay *= 2
-                continue
-            return last
-        if last is None:
-            raise XaiError("xAI client made no attempt.")
-        return last
+            return response
+        raise XaiError("xAI connection was refused before the request was sent.")
 
     def _refuse_tools(self, request: Mapping[str, object]) -> None:
         banned = {"tools", "tool_choice", "web_search", "search_parameters", "x_search"}
@@ -330,6 +325,7 @@ def _parse_success(response: HttpResponse, *, key: str, request_hash: str, model
     if not isinstance(payload, dict):
         raise XaiError("xAI response was not an object.", usage)
     raw_usage = payload.get("usage")
+    request_id = _request_id(payload, key)
     if isinstance(raw_usage, dict):
         usage = UsageRecord(
             request_hash=request_hash,
@@ -341,6 +337,7 @@ def _parse_success(response: HttpResponse, *, key: str, request_hash: str, model
             cost_in_usd_ticks=_cost_ticks(raw_usage),
             latency_ms=latency_ms,
             http_status=response.status,
+            provider_request_id=request_id,
         )
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -397,6 +394,13 @@ def _int_field(value: object) -> int | None:
 
 def _token_estimate(text: str) -> int:
     return max(1, (len(text.encode("utf-8")) + 3) // 4)
+
+
+def _request_id(payload: Mapping[str, object], key: str) -> str | None:
+    value = payload.get("id")
+    if not isinstance(value, str) or not value.strip() or len(value) > 80:
+        return None
+    return _redact(value.strip(), key)
 
 
 def _snippet(text: str, key: str) -> str:

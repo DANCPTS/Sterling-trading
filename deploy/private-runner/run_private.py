@@ -71,9 +71,13 @@ def run(argv: list[str] | None = None) -> int:
     require_xai_key(provider)
     lane = "mock" if provider == "mock" else "forward"
     log_name = "evidence/mock/forward.jsonl" if lane == "mock" else "evidence/forward.jsonl"
+    _materialize(args.evidence, log_name)
     env = os.environ.copy()
     env["STERLING_APP_SHA"] = pin
     env["STERLING_EVIDENCE_LANE"] = lane
+    if provider == "xai":
+        env["STERLING_PUBLISH_PY"] = str(ROOT / "publish_evidence.py")
+        env["STERLING_EVIDENCE_CLONE"] = str(args.evidence)
     if not args.allow_offline_xai:
         env.pop("STERLING_XAI_OFFLINE", None)
     command = [
@@ -122,6 +126,24 @@ def run(argv: list[str] | None = None) -> int:
         raise RuntimeError("evidence push failed")
     print(f"provider={provider} app_sha={pin}")
     return 0
+
+
+def _materialize(clone: Path, name: str) -> None:
+    """Copy the published evidence log into a fresh runner without moving main."""
+    dest = clone / name
+    if dest.is_file():
+        return
+    subprocess.run(["git", "-C", str(clone), "fetch", "origin", "evidence"], check=False, capture_output=True)
+    show = subprocess.run(
+        ["git", "-C", str(clone), "show", f"origin/evidence:{name}"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if show.returncode != 0 or not show.stdout:
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(show.stdout, encoding="utf-8")
 
 
 def main(argv: list[str] | None = None) -> int:

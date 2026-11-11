@@ -7,6 +7,7 @@ week does not call the provider and does not trade.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -57,6 +58,7 @@ def run_week(
     closes: Mapping[str, tuple[str, str, int]] | None = None,
     prints: Sequence[PriceObservation] | None = None,
     hold_reasons: Mapping[str, str] | None = None,
+    before_call: Callable[[], None] | None = None,
 ) -> WeekResult:
     """Settle the previous pending orders, then decide this week once."""
     del prints
@@ -90,35 +92,52 @@ def run_week(
         return WeekResult("carried", week, chosen, state_hash(replay(log.records())), 0, "carry")
     book = replay(log.records())
     _reserve(log, week, chosen, decision_at, recorded_at)
+    if before_call is not None:
+        before_call()
     request_at = event_clock.now()
     prompt = prompt_for(snapshot)
-    raw, _model = provider(snapshot, prompt)
+    forced: str | None = None
+    try:
+        raw, _model = provider(snapshot, prompt)
+    except Exception as exc:
+        if not _provider_responded(exc):
+            raise
+        raw = _sanitise(str(exc))
+        forced = raw[:300] or "provider_error"
+        _log_usage(log, exc, write_clock.now())
     response_at = event_clock.now()
     recorded_at = write_clock.now()
     if response_at < request_at:
         raise ResearchError("response time is before the request time")
     if chosen == "forward" and recorded_at < response_at:
         raise ResearchError("decision was recorded before the response")
-    weights, gate, reasons = _screen(snapshot, prompt, raw, hold_reasons or {})
+    if forced is None:
+        weights, gate, reasons = _screen(snapshot, prompt, raw, hold_reasons or {})
+    else:
+        weights, gate, reasons = {}, "hold", [forced]
     clock_source = "system" if chosen == "forward" else "injected"
+    fields: dict[str, object] = {
+        "accepted_weights": weights,
+        "clock_source": clock_source,
+        "decision_at": decision_at.isoformat(),
+        "gate": gate,
+        "reasons": reasons,
+        "hold_reasons": {name: reason for name, reason in sorted((hold_reasons or {}).items())},
+        "mode": chosen,
+        "prompt_token_estimate": estimate_tokens(prompt_for(snapshot)),
+        "recorded_at": recorded_at.isoformat(),
+        "request_at": request_at.isoformat(),
+        "response_at": response_at.isoformat(),
+        "snapshot_hash": snapshot_hash({quote.instrument_id: ((quote.observed_at, quote.price),) for quote in snapshot.quotes}),
+        "week_key": week,
+    }
+    if gate != "accepted":
+        fields["disposition"] = "HOLD"
+        fields["raw_reply"] = _sanitise(raw)
     log.append_event(
         timestamp_utc=_after(log, recorded_at),
         record_type="decision",
-        fields={
-            "accepted_weights": weights,
-            "clock_source": clock_source,
-            "decision_at": decision_at.isoformat(),
-            "gate": gate,
-            "reasons": reasons,
-            "hold_reasons": {name: reason for name, reason in sorted((hold_reasons or {}).items())},
-            "mode": chosen,
-            "prompt_token_estimate": estimate_tokens(prompt_for(snapshot)),
-            "recorded_at": recorded_at.isoformat(),
-            "request_at": request_at.isoformat(),
-            "response_at": response_at.isoformat(),
-            "snapshot_hash": snapshot_hash({quote.instrument_id: ((quote.observed_at, quote.price),) for quote in snapshot.quotes}),
-            "week_key": week,
-        },
+        fields=fields,
     )
     book = replay(log.records())
     digest = write_state(state_path, book, log_sha=_tip(log))
@@ -398,6 +417,34 @@ def _hold_without_call(
     )
     verify_modes(log.records(), now=write_clock.now())
     return WeekResult("decided", week, mode, digest, 0, "hold")
+
+
+def _provider_responded(exc: BaseException) -> bool:
+    if getattr(exc, "usage", None) is not None:
+        return True
+    text = str(exc)
+    return "after send" in text or "timed out" in text
+
+
+def _sanitise(raw: str) -> str:
+    text = raw.replace("\x00", "")
+    key = os.environ.get("XAI_API_KEY", "")
+    if key:
+        text = text.replace(key, "[redacted]")
+    if len(text) > 20000:
+        text = text[:20000]
+    return text
+
+
+def _log_usage(log: ProposalLog, exc: BaseException, when: datetime) -> None:
+    usage = getattr(exc, "usage", None)
+    as_log = getattr(usage, "as_log", None)
+    if not callable(as_log):
+        return
+    fields = as_log()
+    if not isinstance(fields, dict):
+        return
+    log.append_event(timestamp_utc=_after(log, when), record_type="model_usage", fields=fields)
 
 
 def _reserve(log: ProposalLog, week: str, mode: str, decision_at: datetime, recorded_at: datetime) -> None:

@@ -13,6 +13,7 @@ import argparse
 import csv
 import json
 import os
+import subprocess
 import sys
 import urllib.request
 from collections.abc import Sequence
@@ -245,10 +246,22 @@ def run_decision(
         prints=prints,
         hold_reasons=hold_reasons,
         opens=opens,
+        before_call=_publish_reserve,
     )
-    if provider_name == "xai" and result.status == "decided" and result.gate != "accepted":
-        raise ResearchError(f"xAI proposal was rejected: {result.gate}")
     return result, usage_box["usage"]
+
+
+def _publish_reserve() -> None:
+    script = os.environ.get("STERLING_PUBLISH_PY", "").strip()
+    clone = os.environ.get("STERLING_EVIDENCE_CLONE", "").strip()
+    if not script or not clone:
+        return
+    completed = subprocess.run(
+        [sys.executable, script, "--clone", clone, "--branch", "evidence", "--remote", "origin"],
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise ResearchError("evidence reserve was not published")
 
 
 def fetch_boe_sonia(destination: Path) -> None:

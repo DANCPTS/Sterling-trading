@@ -120,16 +120,166 @@ def test_rejected_xai_payload_is_logged_and_fails(tmp_path: Path, monkeypatch: p
 
     client = XaiClient(enabled=True, transport=_Fake(), sleeper=lambda _delay: None)  # type: ignore[arg-type]
     log = tmp_path / "forward.jsonl"
-    with pytest.raises(module.ResearchError, match="rejected"):
-        module.run_decision(
-            log_path=log,
-            snapshot=snapshot,
-            provider_name="xai",
-            enable_xai=True,
-            dry_run=False,
-            client=client,
-        )
+    result, usage = module.run_decision(
+        log_path=log,
+        snapshot=snapshot,
+        provider_name="xai",
+        enable_xai=True,
+        dry_run=False,
+        client=client,
+    )
+    assert result.provider_calls == 1
+    assert result.gate != "accepted"
+    assert usage is not None
     stored = log.read_text(encoding="utf-8")
     assert "xai-test-key-not-real" not in stored
     assert "unknown_instrument:TSLA" in stored or "malformed_json" in stored
+    assert '"disposition":"HOLD"' in stored
+    assert '"record_type":"model_usage"' in stored
     assert module.healthcheck(log) >= 2
+    again, _second = module.run_decision(
+        log_path=log,
+        snapshot=snapshot,
+        provider_name="xai",
+        enable_xai=True,
+        dry_run=False,
+        client=client,
+    )
+    assert again.provider_calls == 0
+    assert client.calls_sent == 1
+
+
+def _demo(module: object, tmp_path: Path):
+    snapshot, _holds, _prints, _opens = module.build_snapshot(  # type: ignore[attr-defined]
+        as_of=datetime(2024, 6, 7, 16, 30, tzinfo=UTC),
+        cache=None,
+        fetch_free=False,
+        demo_offline=True,
+    )
+    assert snapshot is not None
+    return snapshot
+
+
+def test_inconsistent_hold_is_logged_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _script()
+    monkeypatch.setattr(module.urllib.request, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("network")))
+    snapshot = _demo(module, tmp_path)
+    log = tmp_path / "forward.jsonl"
+    calls = {"n": 0}
+    stages: list[str] = []
+
+    def before() -> None:
+        stages.append("published")
+        assert "week_reserve" in log.read_text(encoding="utf-8")
+
+    def provider(_snapshot: object, _prompt: str) -> tuple[str, str]:
+        calls["n"] += 1
+        assert stages == ["published"]
+        return (
+            json.dumps(
+                {
+                    "model_id": "grok-4.3",
+                    "proposals": [
+                        {
+                            "action": "HOLD",
+                            "confidence": "0.20",
+                            "instrument_id": "VWRP",
+                            "reasoning": "keep the current weight",
+                            "target_weight": "0.10",
+                        }
+                    ],
+                }
+            ),
+            "grok-4.3",
+        )
+
+    result = module.run_week(
+        log_path=log,
+        state_path=module.state_file(log),
+        snapshot=snapshot,
+        provider=provider,
+        mode="forward",
+        before_call=before,
+    )
+    assert result.provider_calls == 1
+    assert result.gate == "inconsistent_action"
+    text = log.read_text(encoding="utf-8")
+    assert '"disposition":"HOLD"' in text
+    assert "keep the current weight" in text
+    assert calls["n"] == 1
+    second = module.run_week(
+        log_path=log,
+        state_path=module.state_file(log),
+        snapshot=snapshot,
+        provider=provider,
+        mode="forward",
+        before_call=before,
+    )
+    assert second.provider_calls == 0
+    assert calls["n"] == 1
+    assert stages == ["published"]
+
+
+def test_malformed_reply_is_a_hold(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _script()
+    monkeypatch.setattr(module.urllib.request, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("network")))
+    snapshot = _demo(module, tmp_path)
+    log = tmp_path / "bad.jsonl"
+
+    def provider(_snapshot: object, _prompt: str) -> tuple[str, str]:
+        return "not-json", "grok-4.3"
+
+    result = module.run_week(
+        log_path=log,
+        state_path=module.state_file(log),
+        snapshot=snapshot,
+        provider=provider,
+        mode="forward",
+    )
+    assert result.gate == "malformed_json"
+    text = log.read_text(encoding="utf-8")
+    assert '"disposition":"HOLD"' in text
+    assert "not-json" in text
+    assert module.healthcheck(log) >= 2
+
+
+def test_crash_after_reserve_blocks_a_second_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _script()
+    monkeypatch.setattr(module.urllib.request, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("network")))
+    snapshot = _demo(module, tmp_path)
+    log = tmp_path / "crash.jsonl"
+    saved: list[str] = []
+    calls = {"n": 0}
+
+    def before() -> None:
+        saved.append(log.read_text(encoding="utf-8"))
+
+    def provider(_snapshot: object, _prompt: str) -> tuple[str, str]:
+        calls["n"] += 1
+        raise RuntimeError("runner died after the reply")
+
+    with pytest.raises(RuntimeError, match="runner died"):
+        module.run_week(
+            log_path=log,
+            state_path=module.state_file(log),
+            snapshot=snapshot,
+            provider=provider,
+            mode="forward",
+            before_call=before,
+        )
+    assert saved and "week_reserve" in saved[0]
+    assert calls["n"] == 1
+
+    def again(_snapshot: object, _prompt: str) -> tuple[str, str]:
+        calls["n"] += 1
+        return "{}", "grok-4.3"
+
+    second = module.run_week(
+        log_path=log,
+        state_path=module.state_file(log),
+        snapshot=snapshot,
+        provider=again,
+        mode="forward",
+    )
+    assert second.provider_calls == 0
+    assert calls["n"] == 1

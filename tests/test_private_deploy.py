@@ -143,7 +143,17 @@ def test_clean_env_publishes_without_a_second_call(tmp_path: Path) -> None:
     assert "provider_calls=1" in mock.stdout
     assert "ModuleNotFoundError" not in mock.stderr
     hook = private / ".git" / "hooks" / "pre-push"
-    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.write_text(
+        "#!/bin/sh\n"
+        'f="$(dirname "$0")/push-count"\n'
+        "n=0\n"
+        '[ -f "$f" ] && n=$(cat "$f")\n'
+        "n=$((n+1))\n"
+        'printf %s "$n" > "$f"\n'
+        '[ "$n" -eq 1 ] && exit 0\n'
+        "exit 1\n",
+        encoding="utf-8",
+    )
     hook.chmod(0o755)
     blocked = _run_clean(
         python,

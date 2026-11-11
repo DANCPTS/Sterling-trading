@@ -27,7 +27,7 @@ Do not copy the workflow into `.github/workflows` of the public repo.
    A mock record in `evidence/forward.jsonl`, or a forward record in `evidence/mock/forward.jsonl`, is rejected.
 10. OpenTimestamps stamping is off. `--stamp` raises and does not contact a server.
 11. Only after those steps, remove `if: false` from the private workflow. Leave the cron line commented until you want a schedule.
-12. Mock dispatch writes `evidence/mock/forward.jsonl` and `evidence/mock/forward.state.json`. It does not reserve a week in the genuine log. The first real call is one manual dispatch with input `provider=xai`. That writes `evidence/forward.jsonl`. Then read that file for `model_usage`, including `cost_in_usd_ticks`, and do not dispatch it again until you have checked that cost.
+12. Mock dispatch writes `evidence/mock/forward.jsonl` and `evidence/mock/forward.state.json`. It does not reserve a week in the genuine log. The xAI lane pushes that week's reservation to `evidence` before the provider request, then calls at most once. A reservation with no later decision blocks the ISO week. Nothing here deletes that line or sends another call. Releasing the week would be a new append-only void record, which is not implemented and is not automatic. The first real call is one manual dispatch with input `provider=xai`. That writes `evidence/forward.jsonl`. Then read that file for `model_usage`, including `cost_in_usd_ticks`, and do not dispatch it again until you have checked that cost.
 
 Missed weeks are appended as `missed_week` records. They are not backfilled with a decision or a trade.
 

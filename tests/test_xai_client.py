@@ -98,10 +98,15 @@ def test_disabled_and_dry_run_do_not_send(monkeypatch: pytest.MonkeyPatch) -> No
 def test_retries_timeout_malformed_oversized_and_redaction(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv(ENV_KEY, KEY)
     sleeps: list[float] = []
-    fake = _Fake([HttpResponse(status=429, body=f"slow {KEY}".encode()), _ok('{"model_id":"grok-4.3","proposals":[]}')])
-    content, usage = _client(fake, sleeper=lambda delay: sleeps.append(delay), max_calls=2).complete("hello")
-    assert sleeps == [0.5]
-    assert _client(fake, max_calls=2).calls_sent == 0 or usage.http_status == 200
+    denied_rate = _Fake([HttpResponse(status=429, body=f"slow {KEY}".encode()), _ok("{}")])
+    with pytest.raises(XaiError, match="HTTP 429"):
+        _client(denied_rate, sleeper=lambda delay: sleeps.append(delay), max_calls=3, max_attempts=3).complete("hello")
+    assert sleeps == []
+    assert len(denied_rate.calls) == 1
+    content, usage = _client(
+        _Fake([_ok('{"model_id":"grok-4.3","proposals":[]}')]),
+        sleeper=lambda delay: sleeps.append(delay),
+    ).complete("hello")
     assert usage.http_status == 200
     assert usage.input_tokens == 20
     assert KEY not in json.dumps(usage.as_log())
