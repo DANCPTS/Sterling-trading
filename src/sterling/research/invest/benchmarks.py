@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import date
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from sterling.research.invest.book import Book, accrue_cash, apply_targets, mark
@@ -67,23 +67,40 @@ def benchmark_table(
     sessions: Sequence[date],
     *,
     sonia: Sequence[tuple[date, Decimal]],
+    as_of: datetime | None = None,
 ) -> dict[str, object]:
-    """Replay frozen rules and the static mixes on the same sessions, costs and SONIA rate."""
+    """Replay frozen rules on the same sessions, costs and SONIA rate.
+
+    Interest is one calendar day at a time, including weekends between the
+    sessions, at the latest IUDSOIA print already published at ``as_of``.
+    That is the same rule as the paper book. A missing print accrues nothing
+    for that day and is not stored as zero.
+    """
     arms = [
-        _static("buy_and_hold_vwrp", {"VWRP": Decimal(1)}, closes, sessions, sonia),
-        _static("equal_weight", {name: Decimal(1) / Decimal(len(FUNDS)) for name in FUNDS}, closes, sessions, sonia),
-        _static("sixty_forty", {"VWRP": Decimal("0.60"), "IGLT": Decimal("0.40")}, closes, sessions, sonia),
-        _cash_only(sessions, sonia),
-        _frozen("etf_trend", _FROZEN_TREND, closes, sessions, sonia),
-        _frozen("etf_dual_momentum", _FROZEN_DUAL, closes, sessions, sonia),
+        _static("buy_and_hold_vwrp", {"VWRP": Decimal(1)}, closes, sessions, sonia, as_of),
+        _static("equal_weight", {name: Decimal(1) / Decimal(len(FUNDS)) for name in FUNDS}, closes, sessions, sonia, as_of),
+        _static("sixty_forty", {"VWRP": Decimal("0.60"), "IGLT": Decimal("0.40")}, closes, sessions, sonia, as_of),
+        _cash_only(sessions, sonia, as_of),
+        _frozen("etf_trend", _FROZEN_TREND, closes, sessions, sonia, as_of),
+        _frozen("etf_dual_momentum", _FROZEN_DUAL, closes, sessions, sonia, as_of),
     ]
     return performance_document(experiment=INVEST_V2, arms=arms)
 
 
-def _accrue(book: Book, sonia: Sequence[tuple[date, Decimal]], session: date) -> None:
-    quote = cash_quote(sonia, session)
-    if quote is not None and quote.annual_decimal > 0:
-        accrue_cash(book, quote.annual_decimal)
+def _accrue_span(
+    book: Book,
+    sonia: Sequence[tuple[date, Decimal]],
+    previous: date | None,
+    session: date,
+    as_of: datetime | None,
+) -> None:
+    start = session if previous is None else previous + timedelta(days=1)
+    day = start
+    while day <= session:
+        quote = cash_quote(sonia, day, as_of=as_of)
+        if quote is not None and quote.annual_decimal > 0:
+            accrue_cash(book, quote.annual_decimal)
+        day += timedelta(days=1)
 
 
 def _static(
@@ -92,11 +109,12 @@ def _static(
     closes: Mapping[str, Sequence[tuple[date, Decimal]]],
     sessions: Sequence[date],
     sonia: Sequence[tuple[date, Decimal]],
+    as_of: datetime | None,
 ) -> dict[str, object]:
     targets = {name: ZERO for name in FUNDS}
     targets.update(weights)
     targets[CASH] = Decimal(1) - sum(weights.values(), ZERO)
-    return _once(name, targets, closes, sessions, sonia)
+    return _once(name, targets, closes, sessions, sonia, as_of)
 
 
 def _once(
@@ -105,12 +123,15 @@ def _once(
     closes: Mapping[str, Sequence[tuple[date, Decimal]]],
     sessions: Sequence[date],
     sonia: Sequence[tuple[date, Decimal]],
+    as_of: datetime | None,
 ) -> dict[str, object]:
     book = Book()
     rows: list[tuple[date, Decimal]] = []
     invested = False
+    previous: date | None = None
     for session in sessions:
-        _accrue(book, sonia, session)
+        _accrue_span(book, sonia, previous, session, as_of)
+        previous = session
         prices = _on(closes, session)
         if not invested:
             tradable = {ticker for ticker in FUNDS if ticker in prices}
@@ -122,11 +143,17 @@ def _once(
     return summarise_arm(name, rows, trades=book.trades, costs=book.cumulative_costs)
 
 
-def _cash_only(sessions: Sequence[date], sonia: Sequence[tuple[date, Decimal]]) -> dict[str, object]:
+def _cash_only(
+    sessions: Sequence[date],
+    sonia: Sequence[tuple[date, Decimal]],
+    as_of: datetime | None,
+) -> dict[str, object]:
     book = Book()
     rows: list[tuple[date, Decimal]] = []
+    previous: date | None = None
     for session in sessions:
-        _accrue(book, sonia, session)
+        _accrue_span(book, sonia, previous, session, as_of)
+        previous = session
         marked = mark(book, {}, session)
         if marked is not None:
             rows.append((session, marked[0]))
@@ -139,6 +166,7 @@ def _frozen(
     closes: Mapping[str, Sequence[tuple[date, Decimal]]],
     sessions: Sequence[date],
     sonia: Sequence[tuple[date, Decimal]],
+    as_of: datetime | None,
 ) -> dict[str, object]:
     if not sessions:
         return summarise_arm(name, [], trades=0, costs=ZERO)
@@ -152,7 +180,7 @@ def _frozen(
     if targets[CASH] < 0:
         targets = {ticker: ZERO for ticker in FUNDS}
         targets[CASH] = Decimal(1)
-    return _once(name, targets, closes, sessions, sonia)
+    return _once(name, targets, closes, sessions, sonia, as_of)
 
 
 def _on(closes: Mapping[str, Sequence[tuple[date, Decimal]]], session: date) -> dict[str, Decimal]:

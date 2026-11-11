@@ -41,6 +41,9 @@ def run_invest_week(
     week = week_key(as_of)
     if _reserved(log, week):
         return {"provider_calls": 0, "status": "noop", "week_key": week}
+    from sterling.research.invest.daily import expire_replaced
+
+    expire_replaced(log, book, as_of)
     _append(
         log,
         as_of,

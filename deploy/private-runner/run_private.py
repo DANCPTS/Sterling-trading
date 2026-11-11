@@ -15,6 +15,24 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+_MOCK_LOGS = (
+    "evidence/invest-v2/mock/forward.jsonl",
+    "evidence/mock/forward.jsonl",
+)
+_FORWARD_LOGS = (
+    "evidence/invest-v2/forward.jsonl",
+    "evidence/forward.jsonl",
+)
+
+
+def assert_named_lane(log_name: str, lane: str) -> None:
+    """Mock cannot write a genuine log, and forward cannot write a mock log."""
+    if lane == "mock" and log_name not in _MOCK_LOGS:
+        raise RuntimeError("mock lane cannot write a genuine evidence log")
+    if lane == "forward" and log_name not in _FORWARD_LOGS:
+        raise RuntimeError("forward lane cannot write the mock evidence log")
+    if lane not in {"mock", "forward"}:
+        raise RuntimeError("lane must be mock or forward")
 
 
 def select_provider(event: str, choice: str) -> str:
@@ -77,6 +95,7 @@ def run(argv: list[str] | None = None) -> int:
         log_name = "evidence/invest-v2/mock/forward.jsonl" if lane == "mock" else "evidence/invest-v2/forward.jsonl"
     else:
         log_name = "evidence/mock/forward.jsonl" if lane == "mock" else "evidence/forward.jsonl"
+    assert_named_lane(log_name, lane)
     _materialize(args.evidence, log_name)
     env = os.environ.copy()
     env["STERLING_APP_SHA"] = pin
@@ -103,6 +122,9 @@ def run(argv: list[str] | None = None) -> int:
         command.append("--enable-xai")
     if args.as_of:
         command.extend(["--fixture", "--simulated-clock", "--as-of", args.as_of])
+    elif provider == "mock" and args.policy == "paper-v2":
+        # Mock paper weeks do not fetch. Live prices belong to the xai lane.
+        command.append("--fixture")
     else:
         command.append("--fetch-free")
     # The private checkout does not install sterling. Every child must see the pinned app.

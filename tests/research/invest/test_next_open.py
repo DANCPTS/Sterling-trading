@@ -13,7 +13,7 @@ from sterling.research.grok.providers import MockGrokProvider, ScriptStep
 from sterling.research.grok.quotes import gbp_divisor, to_gbp
 from sterling.research.invest.book import Book
 from sterling.research.invest.cash_rate import cash_quote, parse_sonia_csv
-from sterling.research.invest.daily import run_daily
+from sterling.research.invest.daily import load_book, run_daily
 from sterling.research.invest.decide import run_invest_week
 from sterling.research.invest.market import select_market
 from sterling.research.invest.schema import CASH, FUNDS, allocation_json
@@ -100,6 +100,65 @@ def test_missing_first_open_fills_on_the_next_session(tmp_path: Path, stamped: N
     assert log.read_text(encoding="utf-8").count('"record_type":"fill"') == len(FUNDS)
 
 
+def test_order_expires_after_five_sessions_and_not_before(tmp_path: Path, stamped: None) -> None:
+    del stamped
+    log = tmp_path / "expire.jsonl"
+    decision = datetime(2026, 11, 11, 18, 0, tzinfo=LONDON)
+    _decide(log, decision)
+    sessions = [date(2026, 11, day) for day in (12, 13, 16, 17, 18)]
+    for session in sessions[:-1]:
+        _day(log, session, datetime(session.year, session.month, session.day, 16, 30, tzinfo=LONDON), opens={})
+    assert '"EXPIRED"' not in log.read_text(encoding="utf-8")
+    last = sessions[-1]
+    _day(log, last, datetime(last.year, last.month, last.day, 16, 30, tzinfo=LONDON), opens={})
+    expired = log.read_text(encoding="utf-8")
+    assert expired.count('"reason":"EXPIRED"') == len(FUNDS)
+    assert '"record_type":"fill"' not in expired
+    nxt = date(2026, 11, 19)
+    _day(log, nxt, datetime(2026, 11, 19, 16, 30, tzinfo=LONDON))
+    final = log.read_text(encoding="utf-8")
+    assert final.count('"record_type":"fill"') == 0
+    assert final.count('"reason":"EXPIRED"') == len(FUNDS)
+
+
+def test_fifth_session_still_fills_when_its_open_exists(tmp_path: Path, stamped: None) -> None:
+    del stamped
+    log = tmp_path / "last.jsonl"
+    _decide(log, datetime(2026, 11, 11, 18, 0, tzinfo=LONDON))
+    for day in (12, 13, 16, 17):
+        session = date(2026, 11, day)
+        _day(log, session, datetime(2026, 11, day, 16, 30, tzinfo=LONDON), opens={})
+    filled = _day(log, date(2026, 11, 18), datetime(2026, 11, 18, 16, 30, tzinfo=LONDON))
+    assert filled["status"] == "marked"
+    body = log.read_text(encoding="utf-8")
+    assert body.count('"record_type":"fill"') == len(FUNDS)
+    assert '"EXPIRED"' not in body
+    _day(log, date(2026, 11, 19), datetime(2026, 11, 19, 16, 30, tzinfo=LONDON))
+    assert log.read_text(encoding="utf-8").count('"record_type":"fill"') == len(FUNDS)
+
+
+def test_next_decision_expires_a_resting_order(tmp_path: Path, stamped: None) -> None:
+    del stamped
+    log = tmp_path / "replace.jsonl"
+    _decide(log, datetime(2026, 11, 11, 18, 0, tzinfo=LONDON))
+    _day(log, date(2026, 11, 12), datetime(2026, 11, 12, 16, 30, tzinfo=LONDON), opens={})
+    carried = load_book(log)
+    assert carried.pending
+    _decide(log, datetime(2026, 11, 16, 18, 0, tzinfo=LONDON), book=carried)
+    text = log.read_text(encoding="utf-8")
+    assert text.count('"reason":"EXPIRED"') == len(FUNDS)
+    assert '"record_type":"fill"' not in text
+    _day(log, date(2026, 11, 17), datetime(2026, 11, 17, 16, 30, tzinfo=LONDON))
+    done = log.read_text(encoding="utf-8")
+    assert done.count('"record_type":"fill"') == len(FUNDS)
+    for line in done.splitlines():
+        if '"record_type":"fill"' in line:
+            assert '"session":"2026-11-17"' in line
+    rerun = _day(log, date(2026, 11, 17), datetime(2026, 11, 17, 18, 0, tzinfo=LONDON))
+    assert rerun["status"] == "noop"
+    assert log.read_text(encoding="utf-8").count('"record_type":"fill"') == len(FUNDS)
+
+
 def test_sonia_csv_and_publication_lag() -> None:
     text = "DATE,IUDSOIA\n09 Nov 2026,3.9684\n10 Nov 2026,3.9701\n"
     parsed = parse_sonia_csv(text)
@@ -138,11 +197,11 @@ def test_fixture_market_drops_future_prints_and_names_the_cross_check() -> None:
     assert notes["CUKX"].startswith("yahoo-chart only")
 
 
-def _decide(log: Path, when: datetime) -> None:
+def _decide(log: Path, when: datetime, book: Book | None = None) -> None:
     weights = {name: format(Decimal(1) / Decimal(7), "f") for name in (*FUNDS, CASH)}
     run_invest_week(
         log_path=log,
-        book=Book(),
+        book=Book() if book is None else book,
         prices={name: Decimal("100") for name in FUNDS},
         tradable=set(FUNDS),
         as_of=when,

@@ -38,6 +38,7 @@ class Book:
     nav_rows: list[tuple[date, Decimal]] = field(default_factory=list)
     peak: Decimal = STARTING_CASH_GBP
     max_drawdown: Decimal = ZERO
+    accrued_through: date | None = None
 
     def quantity(self, ticker: str) -> Decimal:
         return self.quantities.get(ticker, ZERO)

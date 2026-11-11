@@ -1,14 +1,25 @@
 """Daily paper settlement. No model is called.
 
-Opens are the caller's genuine next-session opening prices. A missing open
-stays pending and is recorded as ``fill_skipped``. The position then fills on
-the next session whose open is actually published, and never on a session
-before the decision. A close is never used as a silent substitute for that
-open. Yahoo's daily chart open is the live source (``yahoo-open``). Synthetic
-demos must label their own source. Cash interest that has no published SONIA
-print is left unaccrued and is retried on a later session, including a gap
-under a more recent accrual. A print that was not published by the job's
-clock is not used.
+Opens are the caller's genuine next-session opening prices. A fill is allowed
+only at an XLON 08:00 Europe/London open strictly after the decision. Weekends,
+England and Wales bank holidays, and British Summer Time come from that
+calendar. A missing open stays pending (``fill_skipped`` /
+``opening_price_unavailable``) and fills at the next later open that is
+published. It never fills on an earlier session. If it is still unfilled at
+the fifth XLON session, or a newer weekly decision replaces it, the order is
+logged ``fill_skipped`` with reason ``EXPIRED`` and is not filled afterwards.
+A close is never used as a silent substitute for an open. Yahoo's daily chart
+open is the live source (``yahoo-open``). Synthetic demos must label their
+own source.
+
+Cash interest accrues on every calendar day, including weekends, at the latest
+IUDSOIA print whose reference date is on or before that day and whose
+publication time (09:00 London on the next XLON session) is at or before the
+job clock. That is the same rate rule the benchmarks use. A day with no
+published print is ``interest_pending`` (no amount, not zero) and is retried
+later, including a gap under a newer accrual. ``accrued_through`` is the last
+calendar day of the contiguous accrued prefix. A print that was not published
+by the job's clock is not used.
 """
 
 from __future__ import annotations
@@ -18,16 +29,24 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+from sterling.research.calendar import LONDON
 from sterling.research.fx.grok_forward import ProposalLog
 from sterling.research.invest.benchmarks import benchmark_table
 from sterling.research.invest.book import Book, accrue_cash, mark, trade_toward
-from sterling.research.invest.cash_rate import HAIRCUT_PERCENTAGE_POINTS, cash_quote, unavailable_rate
+from sterling.research.invest.cash_rate import (
+    HAIRCUT_PERCENTAGE_POINTS,
+    SONIA_SOURCE,
+    cash_quote,
+    unavailable_rate,
+)
 from sterling.research.invest.schema import FUNDS
 from sterling.research.invest.sessions import first_session_after, session_open
 from sterling.research.money import ZERO, quantize_money
 
 OPEN_SOURCE_LIVE = "yahoo-open"
 STALE_SESSIONS = 5
+# The first eligible XLON session counts as one. The fifth is the last chance.
+FILL_EXPIRY_SESSIONS = 5
 
 
 def load_book(log_path: Path) -> Book:
@@ -57,26 +76,39 @@ def run_daily(
     book, interest_days, filled, skipped_notes = _replay(records)
     moment = recorded_at
     quote = cash_quote(sonia, session, as_of=recorded_at)
+    accrued, pending_days = _interest_sets(records)
+    origin = _interest_origin(session, records, accrued)
     credited: dict[date, Decimal] = {}
-    for day in _interest_due(session, interest_days, records):
+    for day in _interest_due(session, accrued, origin):
         day_quote = cash_quote(sonia, day, as_of=recorded_at)
         if day_quote is None:
+            if day.isoformat() not in pending_days:
+                moment = _append(log, moment, "interest_pending", _pending_fields(day, origin, accrued))
+                pending_days.add(day.isoformat())
             continue
         rate = day_quote.annual_decimal
         base = _cash_before(records, day) + sum(value for prior, value in credited.items() if prior < day)
         amount = _credit_interest(book, base, rate)
         credited[day] = amount
-        fields = {
-            "amount_gbp": format(amount, "f"),
-            "annual_decimal": format(rate, "f"),
-            "haircut_percentage_points": format(HAIRCUT_PERCENTAGE_POINTS, "f"),
-            "published_on": "" if day_quote is None else day_quote.published_on.isoformat(),
-            "series": "IUDSOIA",
-            "session": day.isoformat(),
-            "sonia_percent": "" if day_quote is None else format(day_quote.sonia_percent, "f"),
-            "source": "unavailable" if day_quote is None else day_quote.source,
-        }
-        moment = _append(log, moment, "cash_interest", fields)
+        accrued.add(day.isoformat())
+        book.accrued_through = _accrued_through(origin, accrued)
+        moment = _append(
+            log,
+            moment,
+            "cash_interest",
+            {
+                "accrued_through": "" if book.accrued_through is None else book.accrued_through.isoformat(),
+                "amount_gbp": format(amount, "f"),
+                "annual_decimal": format(rate, "f"),
+                "haircut_percentage_points": format(HAIRCUT_PERCENTAGE_POINTS, "f"),
+                "published_on": day_quote.published_on.isoformat(),
+                "series": "IUDSOIA",
+                "session": day.isoformat(),
+                "sonia_percent": format(day_quote.sonia_percent, "f"),
+                "source": day_quote.source,
+                "status": "accrued",
+            },
+        )
     if stop_after == "interest":
         return {"provider_calls": 0, "session": session.isoformat(), "status": "stopped", "nav_gbp": format(book.cash, "f")}
     pending = book.pending or {}
@@ -88,16 +120,21 @@ def run_daily(
         if ticker not in pending:
             continue
         key = (session.isoformat(), ticker)
-        if key in filled:
+        if key in filled or _expired(ticker, skipped_notes):
             continue
-        reason = _fill_block(
-            session,
-            eligible,
-            opened,
-            recorded_at,
-            ticker in opens,
-            _earlier_opens_missing(eligible, session, ticker, skipped_notes),
-        )
+        offset = _session_count(eligible, session)
+        reason: str | None
+        if offset is not None and (offset > FILL_EXPIRY_SESSIONS or (offset == FILL_EXPIRY_SESSIONS and ticker not in opens)):
+            reason = "EXPIRED"
+        else:
+            reason = _fill_block(
+                session,
+                eligible,
+                opened,
+                recorded_at,
+                ticker in opens,
+                _earlier_opens_missing(eligible, session, ticker, skipped_notes),
+            )
         if reason is not None:
             skipped.append(ticker)
             if key not in skipped_notes:
@@ -140,7 +177,7 @@ def run_daily(
         start = session - timedelta(days=40)
         sessions = [day for day in _sessions_in(log.records(), start, session)]
         visible = {name: tuple((day, price) for day, price in points if day <= session) for name, points in close_history.items()}
-        table = benchmark_table(visible, sessions or [session], sonia=sonia)
+        table = benchmark_table(visible, sessions or [session], sonia=sonia, as_of=recorded_at)
         table["performance_schema"] = table.pop("schema")
         table["data_label"] = data_label
         table["session"] = session.isoformat()
@@ -293,7 +330,7 @@ def _replay(
             filled.add((str(record.get("session")), str(record.get("fund"))))
         elif kind == "fill_skipped":
             skipped[(str(record.get("session")), str(record.get("fund")))] = str(record.get("reason"))
-        elif kind == "cash_interest":
+        elif kind == "cash_interest" and str(record.get("status") or "accrued") != "pending":
             book.cash = quantize_money(book.cash + Decimal(str(record.get("amount_gbp"))))
             interest.add(str(record.get("session")))
         elif kind == "valuation":
@@ -311,6 +348,9 @@ def _replay(
     book.peak = peak
     book.max_drawdown = worst
     book.pending = pending
+    origin = _interest_origin(date.max, records, interest)
+    if origin != date.max:
+        book.accrued_through = _accrued_through(origin, interest)
     return book, interest, filled, skipped
 
 
@@ -390,13 +430,66 @@ def _has(records: Sequence[Mapping[str, object]], kind: str, session: date) -> b
     return any(record.get("record_type") == kind and record.get("session") == token for record in records)
 
 
-def _interest_due(session: date, already: set[str], records: Sequence[Mapping[str, object]]) -> list[date]:
-    """Calendar days from the first logged session through today that have not accrued.
+def expire_replaced(log: ProposalLog, book: Book, when: datetime) -> None:
+    """Log EXPIRED for a resting missing-open order before a new decision replaces it."""
+    if not book.pending:
+        return
+    filled: set[str] = set()
+    expired: set[str] = set()
+    resting: set[str] = set()
+    for record in log.records():
+        fund = str(record.get("fund"))
+        if record.get("record_type") == "fill":
+            filled.add(fund)
+        elif record.get("record_type") == "fill_skipped" and record.get("reason") == "EXPIRED":
+            expired.add(fund)
+        elif record.get("record_type") == "fill_skipped" and record.get("reason") == "opening_price_unavailable":
+            resting.add(fund)
+    session = when.astimezone(LONDON).date().isoformat()
+    for ticker in FUNDS:
+        if ticker not in book.pending or ticker in filled or ticker in expired or ticker not in resting:
+            continue
+        _append(
+            log,
+            when,
+            "fill_skipped",
+            {"fund": ticker, "reason": "EXPIRED", "session": session, "source": "next_decision"},
+        )
 
-    A day with no published print is absent from ``already`` and is tried again
-    later. A newer accrual does not hide that gap. Days after ``session`` are
-    not included.
-    """
+
+def _expired(ticker: str, skipped: Mapping[tuple[str, str], str]) -> bool:
+    return any(fund == ticker and reason == "EXPIRED" for (_day, fund), reason in skipped.items())
+
+
+def _session_count(eligible: date | None, session: date) -> int | None:
+    """1-based XLON sessions from the first eligible day through ``session``."""
+    if eligible is None or session < eligible or session_open(session) is None:
+        return None
+    count = 0
+    day = eligible
+    while day <= session:
+        if session_open(day) is not None:
+            count += 1
+        day += timedelta(days=1)
+    return count
+
+
+def _interest_sets(records: Sequence[Mapping[str, object]]) -> tuple[set[str], set[str]]:
+    accrued: set[str] = set()
+    pending: set[str] = set()
+    for record in records:
+        session = record.get("session")
+        if not isinstance(session, str):
+            continue
+        kind = record.get("record_type")
+        if kind == "cash_interest" and str(record.get("status") or "accrued") != "pending":
+            accrued.add(session)
+        elif kind == "interest_pending":
+            pending.add(session)
+    return accrued, pending
+
+
+def _interest_origin(session: date, records: Sequence[Mapping[str, object]], accrued: set[str]) -> date:
     origin = session
     for record in records:
         text = record.get("session")
@@ -404,14 +497,41 @@ def _interest_due(session: date, already: set[str], records: Sequence[Mapping[st
             day = date.fromisoformat(text)
             if day < origin:
                 origin = day
-    for item in already:
+    for item in accrued:
         day = date.fromisoformat(item)
         if day < origin:
             origin = day
+    return origin
+
+
+def _accrued_through(origin: date, accrued: set[str]) -> date | None:
+    """Last day of the contiguous accrued prefix. A hole stops the prefix."""
+    cursor = origin
+    last: date | None = None
+    while cursor.isoformat() in accrued:
+        last = cursor
+        cursor += timedelta(days=1)
+    return last
+
+
+def _pending_fields(day: date, origin: date, accrued: set[str]) -> dict[str, str]:
+    through = _accrued_through(origin, accrued)
+    return {
+        "accrued_through": "" if through is None else through.isoformat(),
+        "reason": "sonia_not_yet_published",
+        "series": "IUDSOIA",
+        "session": day.isoformat(),
+        "source": SONIA_SOURCE,
+        "status": "pending",
+    }
+
+
+def _interest_due(session: date, accrued: set[str], origin: date) -> list[date]:
+    """Every calendar day from the ledger origin through ``session`` that has not accrued."""
     days: list[date] = []
     cursor = origin
     while cursor <= session:
-        if cursor.isoformat() not in already:
+        if cursor.isoformat() not in accrued:
             days.append(cursor)
         cursor += timedelta(days=1)
     return days

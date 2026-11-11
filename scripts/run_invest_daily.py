@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -10,6 +11,7 @@ from pathlib import Path
 
 from sterling.research.invest.cash_rate import parse_sonia_csv
 from sterling.research.invest.daily import OPEN_SOURCE_LIVE, run_daily
+from sterling.research.invest.lanes import assert_lane
 from sterling.research.invest.market import select_market
 from sterling.research.invest.schema import FUNDS
 
@@ -27,6 +29,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--opens", default="")
     parser.add_argument("--closes", default="")
     parsed = parser.parse_args(args)
+    lane = os.environ.get("STERLING_EVIDENCE_LANE", "").strip()
+    if lane:
+        try:
+            assert_lane(parsed.log, lane)
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
     session = date.fromisoformat(parsed.session)
     as_of = datetime.now(UTC)
     sonia = parse_sonia_csv(parsed.sonia_csv.read_text(encoding="utf-8")) if parsed.sonia_csv else ()
