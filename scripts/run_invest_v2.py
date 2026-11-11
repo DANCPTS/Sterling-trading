@@ -10,12 +10,14 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
-from sterling.research.grok.providers import MockGrokProvider, ProviderEnvelope
+from sterling.research.grok.providers import MockGrokProvider
+from sterling.research.invest.adapter import LiveAllocationAdapter
 from sterling.research.invest.book import Book
 from sterling.research.invest.daily import load_book
 from sterling.research.invest.decide import run_invest_week
 from sterling.research.invest.lanes import assert_lane
-from sterling.research.invest.schema import ALLOCATION_SCHEMA, FUNDS
+from sterling.research.invest.prompt import allocation_prompt, latest_prices
+from sterling.research.invest.schema import FUNDS
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -40,21 +42,22 @@ def main(argv: list[str] | None = None) -> int:
     os.environ.setdefault("STERLING_EXPERIMENT", "paper-v2")
     as_of = datetime.now(UTC) if args.as_of is None else datetime.fromisoformat(args.as_of)
     if args.provider == "mock" or args.fixture or args.as_of:
-        prices = {name: Decimal("100") for name in FUNDS}
+        prints = [(name, as_of.date(), Decimal("100"), as_of) for name in FUNDS]
         mode = "simulated_clock"
     else:
-        prices = _live_prices(args.cache or Path("evidence"))
+        prints = _live_prints(args.cache or Path("evidence"), as_of)
         mode = "forward"
-    provider = _provider(args.provider, args.enable_xai)
+    prices = latest_prices(prints, as_of)
     book = load_book(args.log) if args.log.is_file() else Book()
+    prompt = allocation_prompt(book=book, prints=prints, as_of=as_of, tradable=set(prices))
     result = run_invest_week(
         log_path=args.log,
         book=book,
         prices=prices,
         tradable=set(prices),
         as_of=as_of,
-        provider=provider,
-        prompt="paper-v2 allocation",
+        provider=_provider(args.provider, args.enable_xai),
+        prompt=prompt,
         before_call=_publish_reserve,
         mode=mode,
     )
@@ -69,15 +72,7 @@ def main(argv: list[str] | None = None) -> int:
 def _provider(name: str, enable_xai: bool) -> object:
     if name == "mock":
         return MockGrokProvider(seed=1, response_format="allocation")
-    client = _weekly()._client(enable_xai, False)
-
-    class _Adapter:
-        def complete(self, snapshot: object, *, prompt: str) -> ProviderEnvelope:
-            del snapshot
-            content, _usage = client.complete(prompt, schema=ALLOCATION_SCHEMA)
-            return ProviderEnvelope(model_id=client.model, responded_at=datetime.now(UTC), raw_response=content)
-
-    return _Adapter()
+    return LiveAllocationAdapter(_weekly()._client(enable_xai, False))
 
 
 def _weekly() -> object:
@@ -90,17 +85,18 @@ def _weekly() -> object:
     return module
 
 
-def _live_prices(cache: Path) -> dict[str, Decimal]:
+def _live_prints(cache: Path, as_of: datetime) -> list[tuple[str, datetime.date, Decimal, datetime]]:
     module = _weekly()
     primary, _secondary, _opens = module._live_inputs(cache)
-    latest: dict[str, Decimal] = {}
+    prints: list[tuple[str, datetime.date, Decimal, datetime]] = []
     for item in primary:
-        if item.instrument_id in FUNDS:
-            latest[item.instrument_id] = item.price
-    if len(latest) < len(FUNDS):
-        missing = sorted(set(FUNDS) - set(latest))
+        if item.instrument_id in FUNDS and item.published_at <= as_of:
+            prints.append((item.instrument_id, item.session, item.price, item.published_at))
+    seen = {ticker for ticker, _session, _price, _at in prints}
+    missing = sorted(set(FUNDS) - seen)
+    if missing:
         print(f"missing cross-check or close for {','.join(missing)}", file=sys.stderr)
-    return latest
+    return prints
 
 
 def _publish_reserve() -> None:
