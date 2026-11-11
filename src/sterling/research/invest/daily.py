@@ -50,18 +50,19 @@ def run_daily(
     book, interest_days, settled = _replay(records)
     moment = recorded_at
     quote = cash_quote(sonia, session)
-    rate = quote.annual_decimal if quote is not None else ZERO
-    if session.isoformat() not in interest_days:
+    for day in _interest_due(session, interest_days):
+        day_quote = cash_quote(sonia, day)
+        rate = day_quote.annual_decimal if day_quote is not None else ZERO
         amount = accrue_cash(book, rate)
         fields = {
             "amount_gbp": format(amount, "f"),
             "annual_decimal": format(rate, "f"),
             "haircut_percentage_points": format(HAIRCUT_PERCENTAGE_POINTS, "f"),
-            "published_on": "" if quote is None else quote.published_on.isoformat(),
+            "published_on": "" if day_quote is None else day_quote.published_on.isoformat(),
             "series": "IUDSOIA",
-            "session": session.isoformat(),
-            "sonia_percent": "" if quote is None else format(quote.sonia_percent, "f"),
-            "source": "unavailable" if quote is None else quote.source,
+            "session": day.isoformat(),
+            "sonia_percent": "" if day_quote is None else format(day_quote.sonia_percent, "f"),
+            "source": "unavailable" if day_quote is None else day_quote.source,
         }
         moment = _append(log, moment, "cash_interest", fields)
     if stop_after == "interest":
@@ -196,16 +197,15 @@ def _replay(records: Sequence[Mapping[str, object]]) -> tuple[Book, set[str], se
             day_text = record.get("session")
             if isinstance(nav_text, str) and isinstance(day_text, str):
                 book.nav_rows.append((date.fromisoformat(day_text), Decimal(nav_text)))
-    if book.nav_rows:
-        peak = book.nav_rows[0][1]
-        worst = ZERO
-        for _day, nav in book.nav_rows:
-            if nav > peak:
-                peak = nav
-            if peak > 0 and (peak - nav) / peak > worst:
-                worst = (peak - nav) / peak
-        book.peak = peak
-        book.max_drawdown = worst
+    peak = START_NAV
+    worst = ZERO
+    for _day, nav in book.nav_rows:
+        if nav > peak:
+            peak = nav
+        if peak > 0 and (peak - nav) / peak > worst:
+            worst = (peak - nav) / peak
+    book.peak = peak
+    book.max_drawdown = worst
     book.pending = pending
     return book, interest, settled
 
@@ -231,8 +231,9 @@ def _valuation(
     quote: object,
     data_label: str,
 ) -> dict[str, object]:
-    start = START_NAV if not book.nav_rows else book.nav_rows[0][1]
-    previous = book.nav_rows[-2][1] if len(book.nav_rows) > 1 else start
+    history = book.nav_rows[:-1]
+    start = history[0][1] if history else START_NAV
+    previous = history[-1][1] if history else START_NAV
     cumulative = (nav / start - 1) if start > 0 else ZERO
     period = (nav / previous - 1) if previous > 0 else ZERO
     daily_pnl = nav - previous
@@ -272,6 +273,20 @@ def _sessions_in(records: Sequence[Mapping[str, object]], start: date, end: date
 def _has(records: Sequence[Mapping[str, object]], kind: str, session: date) -> bool:
     token = session.isoformat()
     return any(record.get("record_type") == kind and record.get("session") == token for record in records)
+
+
+def _interest_due(session: date, already: set[str]) -> list[date]:
+    """Calendar days since the previous interest record, including this session."""
+    if not already:
+        return [session]
+    last = max(date.fromisoformat(item) for item in already)
+    days: list[date] = []
+    cursor = last + timedelta(days=1)
+    while cursor <= session:
+        if cursor.isoformat() not in already:
+            days.append(cursor)
+        cursor += timedelta(days=1)
+    return days
 
 
 def _weekdays(start: date, end: date) -> int:

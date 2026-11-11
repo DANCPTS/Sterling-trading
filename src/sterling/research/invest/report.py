@@ -7,6 +7,7 @@ a later log with ``system=sterling-fx`` would render as its own section.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from sterling.research.errors import ResearchError
@@ -63,7 +64,8 @@ section {{ margin-top: 1.5rem; }}
 <p class="banner">DATA LABEL: {label}. This page is not a live broker account.</p>
 <h1>Sterling performance</h1>
 {sections}
-<p>Latest portfolio value {nav} GBP. Cash {cash} GBP. Drawdown {drawdown}. Dealing costs {costs} GBP.</p>
+<p>Latest portfolio value {_money(nav)} GBP. Cash {_money(cash)} GBP.
+Drawdown {_pct(drawdown)}. Dealing costs {_money(costs)} GBP.</p>
 <h2>Daily marks</h2>
 <table>
 <thead><tr><th>Date</th><th>Value</th><th>Cash</th><th>Daily P&amp;L</th><th>Return</th><th>Drawdown</th></tr></thead>
@@ -88,11 +90,11 @@ def _row(record: Mapping[str, object]) -> str:
     return (
         "<tr>"
         f"<td>{record.get('session')}</td>"
-        f"<td>{record.get('nav_gbp')}</td>"
-        f"<td>{record.get('cash_gbp')}</td>"
-        f"<td>{record.get('daily_pnl_gbp')}</td>"
-        f"<td>{record.get('cumulative_return')}</td>"
-        f"<td>{record.get('drawdown')}</td>"
+        f"<td>{_money(record.get('nav_gbp'))}</td>"
+        f"<td>{_money(record.get('cash_gbp'))}</td>"
+        f"<td>{_money(record.get('daily_pnl_gbp'))}</td>"
+        f"<td>{_pct(record.get('cumulative_return'))}</td>"
+        f"<td>{_pct(record.get('drawdown'))}</td>"
         "</tr>"
     )
 
@@ -101,10 +103,33 @@ def _arm(arm: Mapping[str, object]) -> str:
     return (
         "<tr>"
         f"<td>{arm.get('name')}</td>"
-        f"<td>{arm.get('end_nav_gbp')}</td>"
-        f"<td>{arm.get('cumulative_return')}</td>"
-        f"<td>{arm.get('max_drawdown')}</td>"
+        f"<td>{_money(arm.get('end_nav_gbp'))}</td>"
+        f"<td>{_pct(arm.get('cumulative_return'))}</td>"
+        f"<td>{_pct(arm.get('max_drawdown'))}</td>"
         f"<td>{arm.get('trades')}</td>"
-        f"<td>{arm.get('costs_gbp')}</td>"
+        f"<td>{_money(arm.get('costs_gbp'))}</td>"
         "</tr>"
     )
+
+
+def _money(value: object) -> str:
+    amount = _decimal(value)
+    if amount is None:
+        return ""
+    return f"{amount:,.2f}"
+
+
+def _pct(value: object) -> str:
+    amount = _decimal(value)
+    if amount is None:
+        return ""
+    return f"{amount * 100:.2f}%"
+
+
+def _decimal(value: object) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None

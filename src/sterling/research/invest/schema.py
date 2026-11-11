@@ -8,7 +8,6 @@ from decimal import Decimal
 
 from sterling.research.errors import ResearchError
 from sterling.research.grok.preregistration import APPROVED_UNIVERSE
-from sterling.research.invest.registration import SUM_TOLERANCE
 from sterling.research.money import ZERO, parse_decimal
 
 FUNDS = APPROVED_UNIVERSE
@@ -117,6 +116,8 @@ def _weights(value: object) -> dict[str, Decimal] | AllocationFailure:
         if amount < 0 or amount > 1:
             return AllocationFailure("weight_out_of_range")
         parsed[name] = amount
+    from sterling.research.invest.registration import SUM_TOLERANCE
+
     total = sum(parsed.values(), ZERO)
     if total <= 0 or abs(total - 1) > SUM_TOLERANCE:
         return AllocationFailure("weight_sum")

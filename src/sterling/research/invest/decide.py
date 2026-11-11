@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Protocol
@@ -69,6 +69,7 @@ def run_invest_week(
         raw = ""
     fields: dict[str, object] = {
         "accepted_weights": {name: format(targets[name], "f") for name in sorted(targets)},
+        "cash_gbp": format(book.cash, "f"),
         "clock_source": _clock(mode),
         "confidence": format(confidence, "f"),
         "derived_actions": actions,
@@ -91,7 +92,6 @@ def run_invest_week(
     book.pending = parsed.weights if gate == "accepted" and isinstance(parsed, Allocation) else None
     marked = mark(book, prices, as_of.date())
     nav = marked[0] if marked is not None else book.cash
-    moment = _append(log, moment, "valuation", _valuation(book, as_of.date(), nav))
     _append(
         log,
         moment,
@@ -125,26 +125,6 @@ def _snapshot(book: Book, prices: dict[str, Decimal], as_of: datetime) -> Market
     if nav <= 0:
         nav = Decimal("0.01")
     return MarketSnapshot(as_of=as_of, quotes=tuple(quotes), positions=tuple(positions), nav_gbp=nav, universe=FUNDS)
-
-
-def _valuation(book: Book, session: date, nav: Decimal) -> dict[str, object]:
-    start = book.nav_rows[0][1] if book.nav_rows else nav
-    previous = book.nav_rows[-2][1] if len(book.nav_rows) > 1 else start
-    cumulative = (nav / start - 1) if start > 0 else ZERO
-    period = (nav / previous - 1) if previous > 0 else ZERO
-    return {
-        "cash_gbp": format(book.cash, "f"),
-        "cumulative_costs_gbp": format(book.cumulative_costs, "f"),
-        "cumulative_return": format(cumulative, "f"),
-        "daily_pnl_gbp": format(nav - previous, "f"),
-        "drawdown": format(book.max_drawdown, "f"),
-        "holdings": {name: format(book.quantity(name), "f") for name in FUNDS if book.quantity(name) > 0},
-        "nav_gbp": format(nav, "f"),
-        "pending_targets": {name: format(weight, "f") for name, weight in sorted((book.pending or {}).items())},
-        "period_return": format(period, "f"),
-        "session": session.isoformat(),
-        "trades": book.trades,
-    }
 
 
 def _state_hash(book: Book) -> str:
