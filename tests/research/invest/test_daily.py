@@ -87,7 +87,7 @@ def test_daily_rerun_and_restart_do_not_double(tmp_path: Path, stamped: None) ->
     )
     assert finished["status"] == "marked"
     again = log.read_text(encoding="utf-8")
-    assert again.count('"record_type":"fill"') == fills
+    assert again.count('"record_type":"fill"') == fills + 1
     assert again.count('"record_type":"cash_interest"') == 1
     day_marks = [line for line in again.splitlines() if '"record_type":"valuation"' in line and "2026-11-03" in line]
     assert len(day_marks) == 1

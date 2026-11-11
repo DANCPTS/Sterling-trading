@@ -66,6 +66,8 @@ section {{ margin-top: 1.5rem; }}
 {sections}
 <p>Latest portfolio value {_money(nav)} GBP. Cash {_money(cash)} GBP.
 Drawdown {_pct(drawdown)}. Dealing costs {_money(costs)} GBP.</p>
+{_rate_line(latest)}
+{_cross_line(latest)}
 <h2>Daily marks</h2>
 <table>
 <thead><tr><th>Date</th><th>Value</th><th>Cash</th><th>Daily P&amp;L</th><th>Return</th><th>Drawdown</th></tr></thead>
@@ -84,6 +86,29 @@ Drawdown {_pct(drawdown)}. Dealing costs {_money(costs)} GBP.</p>
 </body>
 </html>
 """
+
+
+def _rate_line(latest: Mapping[str, object]) -> str:
+    rate = latest.get("cash_rate")
+    if not isinstance(rate, dict):
+        return ""
+    if rate.get("status") == "unavailable":
+        return f"<p>SONIA interest was not accrued: {rate.get('reason')}.</p>"
+    return (
+        f"<p>SONIA {rate.get('sonia_percent')} for {rate.get('published_on')}, "
+        f"available {rate.get('available_at')}. Haircut {rate.get('haircut_percentage_points')} points.</p>"
+    )
+
+
+def _cross_line(latest: Mapping[str, object]) -> str:
+    prices = latest.get("prices")
+    if not isinstance(prices, dict):
+        return ""
+    notes = []
+    for name, info in prices.items():
+        if isinstance(info, dict):
+            notes.append(f"{name} {info.get('status')} ({info.get('cross_check')})")
+    return "<p>Closes: " + "; ".join(notes) + ".</p>"
 
 
 def _row(record: Mapping[str, object]) -> str:

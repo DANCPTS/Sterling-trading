@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from sterling.research.costs import TradeQuote, affordable_buy, quote_trade, research_cost_model
@@ -33,6 +33,7 @@ class Book:
     interest: Decimal = ZERO_MONEY
     trades: int = 0
     pending: dict[str, Decimal] | None = None
+    decided_at: datetime | None = None
     last_price: dict[str, tuple[Decimal, date]] = field(default_factory=dict)
     nav_rows: list[tuple[date, Decimal]] = field(default_factory=list)
     peak: Decimal = STARTING_CASH_GBP
