@@ -61,6 +61,7 @@ def run(argv: list[str] | None = None) -> int:
     parser.add_argument("--provider", default="")
     parser.add_argument("--pin-file", type=Path, required=True)
     parser.add_argument("--as-of", default="")
+    parser.add_argument("--policy", default="grok-forward-v1")
     parser.add_argument("--allow-offline-xai", action="store_true")
     args = parser.parse_args(argv)
     pin = read_pin(args.pin_file)
@@ -70,11 +71,19 @@ def run(argv: list[str] | None = None) -> int:
     provider = select_provider(args.event, args.provider)
     require_xai_key(provider)
     lane = "mock" if provider == "mock" else "forward"
-    log_name = "evidence/mock/forward.jsonl" if lane == "mock" else "evidence/forward.jsonl"
+    if args.policy not in {"grok-forward-v1", "paper-v2"}:
+        raise RuntimeError("policy must be grok-forward-v1 or paper-v2")
+    if args.policy == "paper-v2":
+        log_name = "evidence/invest-v2/mock/forward.jsonl" if lane == "mock" else "evidence/invest-v2/forward.jsonl"
+    else:
+        log_name = "evidence/mock/forward.jsonl" if lane == "mock" else "evidence/forward.jsonl"
     _materialize(args.evidence, log_name)
     env = os.environ.copy()
     env["STERLING_APP_SHA"] = pin
     env["STERLING_EVIDENCE_LANE"] = lane
+    if args.policy == "paper-v2":
+        env["STERLING_SYSTEM"] = "sterling-invest"
+        env["STERLING_EXPERIMENT"] = "paper-v2"
     if provider == "xai":
         env["STERLING_PUBLISH_PY"] = str(ROOT / "publish_evidence.py")
         env["STERLING_EVIDENCE_CLONE"] = str(args.evidence)
@@ -82,7 +91,7 @@ def run(argv: list[str] | None = None) -> int:
         env.pop("STERLING_XAI_OFFLINE", None)
     command = [
         sys.executable,
-        str(args.app / "scripts" / "run_weekly_decision.py"),
+        str(args.app / "scripts" / ("run_invest_v2.py" if args.policy == "paper-v2" else "run_weekly_decision.py")),
         "--provider",
         provider,
         "--log",

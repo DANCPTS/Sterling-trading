@@ -20,10 +20,13 @@ from pathlib import Path
 
 from sterling.research.fx.grok_forward import ProposalLog
 from sterling.research.grok.verify import verify_evidence_lane
+from sterling.research.invest.verify import verify_invest, verify_v1_closed
 
 LOGS = {
     "evidence/forward.jsonl": "forward",
     "evidence/mock/forward.jsonl": "mock",
+    "evidence/invest-v2/forward.jsonl": "forward",
+    "evidence/invest-v2/mock/forward.jsonl": "mock",
 }
 # Command-local identity. Never git config --global.
 _IDENTITY = (
@@ -79,6 +82,10 @@ def publish(clone: Path, *, branch: str = "evidence", remote: str = "origin") ->
                 log = ProposalLog(local)
                 log.verify()
                 verify_evidence_lane(log.records(), lane=LOGS[name])
+                if "invest-v2" in name:
+                    verify_invest(log.records(), lane=LOGS[name])
+                else:
+                    verify_v1_closed(log.records())
                 _git(work, "add", name)
                 if name in states:
                     state = local.with_suffix(".state.json")

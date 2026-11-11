@@ -215,7 +215,7 @@ class XaiClient:
         self.calls_sent = 0
         self.last_request: dict[str, object] | None = None
 
-    def build_request(self, prompt: str) -> dict[str, object]:
+    def build_request(self, prompt: str, *, schema: Mapping[str, object] | None = None) -> dict[str, object]:
         return {
             "messages": [
                 {
@@ -231,7 +231,7 @@ class XaiClient:
             "model": self.model,
             "reasoning_effort": "low",
             "response_format": {
-                "json_schema": {"name": "sterling_proposals", "schema": PROPOSAL_SCHEMA, "strict": True},
+                "json_schema": {"name": "sterling_proposals", "schema": dict(schema or PROPOSAL_SCHEMA), "strict": True},
                 "type": "json_schema",
             },
             "temperature": 0,
@@ -242,13 +242,13 @@ class XaiClient:
         total = Decimal(prompt_tokens) * INPUT_USD_PER_MILLION + Decimal(self.output_token_budget) * OUTPUT_USD_PER_MILLION
         return total / Decimal(1_000_000)
 
-    def complete(self, prompt: str) -> tuple[str, UsageRecord]:
+    def complete(self, prompt: str, *, schema: Mapping[str, object] | None = None) -> tuple[str, UsageRecord]:
         key = os.environ.get(ENV_KEY) or ""
         if not self.enabled or not key:
             raise XaiDisabled("xAI client refuses to run without an explicit config flag and XAI_API_KEY. No request was sent.")
         if self.calls_sent >= self.max_calls:
             raise XaiRefused("per-run call cap reached. No further request was sent.")
-        request = self.build_request(prompt)
+        request = self.build_request(prompt, schema=schema)
         self.last_request = request
         self._refuse_tools(request)
         encoded = json.dumps(request, sort_keys=True, separators=(",", ":")).encode("utf-8")

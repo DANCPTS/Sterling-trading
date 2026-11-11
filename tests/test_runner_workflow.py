@@ -118,7 +118,11 @@ def _layout(tmp: Path) -> tuple[Path, Path, dict[str, str], str]:
 
 
 def _fill(script: str, provider: str) -> str:
-    return script.replace("${{ github.event_name }}", "workflow_dispatch").replace("${{ inputs.provider }}", provider)
+    return (
+        script.replace("${{ github.event_name }}", "workflow_dispatch")
+        .replace("${{ inputs.provider }}", provider)
+        .replace("${{ inputs.policy }}", "paper-v2")
+    )
 
 
 def _branch(repo: Path, env: dict[str, str]) -> str:
@@ -165,7 +169,7 @@ def test_workflow_steps_keep_main_and_publish_mock(tmp_path: Path) -> None:
         assert ping.is_file()
         assert _branch(private, env) == "main"
         absent = subprocess.run(
-            ["git", "--git-dir", str(bare), "cat-file", "-e", "evidence:evidence/mock/forward.jsonl"],
+            ["git", "--git-dir", str(bare), "cat-file", "-e", "evidence:evidence/invest-v2/mock/forward.jsonl"],
             capture_output=True,
             env=env,
         )
@@ -182,7 +186,7 @@ def test_workflow_steps_keep_main_and_publish_mock(tmp_path: Path) -> None:
         assert ping.is_file()
         assert _branch(private, env) == "main"
         remote = subprocess.run(
-            ["git", "--git-dir", str(bare), "show", "evidence:evidence/mock/forward.jsonl"],
+            ["git", "--git-dir", str(bare), "show", "evidence:evidence/invest-v2/mock/forward.jsonl"],
             check=True,
             capture_output=True,
             text=True,
@@ -199,7 +203,7 @@ def test_workflow_steps_keep_main_and_publish_mock(tmp_path: Path) -> None:
         assert "provider_calls=0" in again.stdout
         assert "provider_calls=1" not in again.stdout
         still = subprocess.run(
-            ["git", "--git-dir", str(bare), "show", "evidence:evidence/mock/forward.jsonl"],
+            ["git", "--git-dir", str(bare), "show", "evidence:evidence/invest-v2/mock/forward.jsonl"],
             check=True,
             capture_output=True,
             text=True,

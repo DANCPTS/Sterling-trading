@@ -25,6 +25,16 @@ from sterling.research.errors import ResearchError, ResearchIsolationError
 SCHEMA = "fx-forward-log-v1"
 
 
+def _experiment_stamp() -> dict[str, str]:
+    system = os.environ.get("STERLING_SYSTEM", "").strip()
+    experiment = os.environ.get("STERLING_EXPERIMENT", "").strip()
+    if not system and not experiment:
+        return {}
+    if not system or not experiment:
+        raise ResearchError("system and experiment must be set together")
+    return {"experiment": experiment, "system": system}
+
+
 def _evidence_lane() -> str | None:
     value = os.environ.get("STERLING_EVIDENCE_LANE", "").strip()
     if not value:
@@ -167,6 +177,7 @@ class ProposalLog:
         lane = _evidence_lane()
         if lane is not None:
             created["evidence_lane"] = lane
+        created.update(_experiment_stamp())
         record = _seal(created, GENESIS)
         line = canonical(record) + "\n"
         flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
@@ -277,6 +288,8 @@ class ProposalLog:
             "distribution",
             "state_commit",
             "missed_week",
+            "valuation",
+            "performance",
         }:
             raise ResearchError("forward log event type is not allowed")
         stamped = require_utc(timestamp_utc)
@@ -290,6 +303,9 @@ class ProposalLog:
         lane = _evidence_lane()
         if lane is not None and "evidence_lane" not in safe:
             safe["evidence_lane"] = lane
+        for key, value in _experiment_stamp().items():
+            if key not in safe:
+                safe[key] = value
         body: dict[str, object] = {"schema": SCHEMA, "record_type": record_type, "timestamp_utc": _iso(stamped)}
         for key, value in safe.items():
             if key in body or key in {"prev_hash", "record_hash"}:

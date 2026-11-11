@@ -311,3 +311,52 @@ def test_pinned_checkout_two_runs_and_a_failed_run(tmp_path: Path, monkeypatch: 
     usage = [json.loads(line) for line in stored.splitlines() if '"model_usage"' in line]
     assert len(usage) == 1
     assert usage[0]["cost_in_usd_ticks"] == 0
+
+
+def test_paper_v2_clean_env_publishes_its_own_lane(tmp_path: Path) -> None:
+    app, sha = _app_commit(tmp_path)
+    private = _private(tmp_path)
+    shutil.copytree(RUNNER, private / "deploy" / "private-runner")
+    pin = private / "deploy" / "private-runner" / "pinned_app_sha.txt"
+    pin.write_text(sha + "\n", encoding="utf-8")
+    python = _clean_python(tmp_path)
+    first = _run_clean(
+        python,
+        private,
+        app,
+        pin,
+        "--event",
+        "workflow_dispatch",
+        "--provider",
+        "mock",
+        "--policy",
+        "paper-v2",
+        "--as-of",
+        "2026-11-02T16:30:00+00:00",
+    )
+    assert first.returncode == 0, first.stderr + first.stdout
+    assert "provider_calls=1" in first.stdout
+    lane = private / "evidence" / "invest-v2" / "mock" / "forward.jsonl"
+    assert lane.is_file()
+    assert not (private / "evidence" / "forward.jsonl").exists()
+    text = lane.read_text(encoding="utf-8")
+    assert '"experiment":"paper-v2"' in text
+    assert '"system":"sterling-invest"' in text
+    assert '"execution_permission":"NOT_ISSUED"' in text
+    second = _run_clean(
+        python,
+        private,
+        app,
+        pin,
+        "--event",
+        "workflow_dispatch",
+        "--provider",
+        "mock",
+        "--policy",
+        "paper-v2",
+        "--as-of",
+        "2026-11-02T16:30:00+00:00",
+    )
+    assert second.returncode == 0, second.stderr + second.stdout
+    assert "provider_calls=0" in second.stdout
+    assert "provider_calls=1" not in second.stdout
