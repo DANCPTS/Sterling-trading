@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from sterling.research.grok.providers import MockGrokProvider, ScriptStep
 from sterling.research.invest.book import Book
 from sterling.research.invest.cash_rate import HAIRCUT_PERCENTAGE_POINTS, cash_quote, parse_sonia_csv
-from sterling.research.invest.daily import run_daily
+from sterling.research.invest.daily import load_book, run_daily
 from sterling.research.invest.decide import run_invest_week
 from sterling.research.invest.report import _money, _pct, write_dashboard
 from sterling.research.invest.schema import CASH, FUNDS, allocation_json
+from sterling.research.money import quantize_money
 
 ROOT = Path(__file__).resolve().parents[3]
 WHEN = datetime(2026, 11, 2, 16, 30, tzinfo=UTC)
@@ -118,6 +120,61 @@ def test_daily_rerun_and_restart_do_not_double(tmp_path: Path, stamped: None) ->
     assert page.read_text(encoding="utf-8") == "stale"
 
 
+def test_missing_first_sonia_day_is_backfilled_once(tmp_path: Path, stamped: None) -> None:
+    del stamped
+    log = tmp_path / "interest.jsonl"
+    thursday = date(2026, 11, 12)
+    friday = date(2026, 11, 13)
+    series = ((thursday, Decimal("4.00")), (date(2026, 11, 20), Decimal("9.00")))
+    _mark(log, thursday, datetime(2026, 11, 12, 16, 30, tzinfo=ZoneInfo("Europe/London")), series)
+    assert '"record_type":"cash_interest"' not in log.read_text(encoding="utf-8")
+    _mark(log, friday, datetime(2026, 11, 13, 16, 30, tzinfo=ZoneInfo("Europe/London")), series)
+    amounts = _interest_rows(log)
+    assert [day for day, _amount, _rate in amounts] == ["2026-11-12", "2026-11-13"]
+    assert _accrued(Decimal("10000.00"), [Decimal("0.035"), Decimal("0.035")]) == sum(amount for _day, amount, _rate in amounts)
+    assert load_book(log).cash == Decimal("10000.00") + sum(amount for _day, amount, _rate in amounts)
+    assert all(rate == Decimal("0.035") for _day, _amount, rate in amounts)
+    rerun = _mark(log, friday, datetime(2026, 11, 13, 18, 0, tzinfo=ZoneInfo("Europe/London")), series)
+    assert rerun["status"] == "noop"
+    assert _interest_rows(log) == amounts
+
+
+def test_sonia_gap_before_a_later_accrual_is_backfilled_once(tmp_path: Path, stamped: None) -> None:
+    del stamped
+    log = tmp_path / "gap.jsonl"
+    london = ZoneInfo("Europe/London")
+    early = ((date(2026, 11, 12), Decimal("4.00")), (date(2026, 11, 20), Decimal("9.00")))
+    _mark(log, date(2026, 11, 11), datetime(2026, 11, 11, 16, 30, tzinfo=london), ())
+    assert '"record_type":"cash_interest"' not in log.read_text(encoding="utf-8")
+    _mark(log, date(2026, 11, 13), datetime(2026, 11, 13, 16, 30, tzinfo=london), early)
+    first = _interest_rows(log)
+    assert [day for day, _amount, _rate in first] == ["2026-11-12", "2026-11-13"]
+    later = ((date(2026, 11, 11), Decimal("3.00")), *early)
+    _mark(log, date(2026, 11, 16), datetime(2026, 11, 16, 16, 30, tzinfo=london), later)
+    rows = _interest_rows(log)
+    assert [day for day, _amount, _rate in rows] == [
+        "2026-11-12",
+        "2026-11-13",
+        "2026-11-11",
+        "2026-11-14",
+        "2026-11-15",
+        "2026-11-16",
+    ]
+    rates = {day: rate for day, _amount, rate in rows}
+    amounts = {day: amount for day, amount, _rate in rows}
+    assert rates["2026-11-11"] == Decimal("0.025")
+    assert amounts["2026-11-11"] == quantize_money(Decimal("10000.00") * Decimal("0.025") / Decimal(365))
+    assert rates["2026-11-14"] == Decimal("0.035")
+    assert "9" not in "".join(format(rate, "f") for _day, _amount, rate in rows)
+    total = _replay_cash(rows)
+    assert load_book(log).cash == total
+    stored = log.read_text(encoding="utf-8")
+    rerun = _mark(log, date(2026, 11, 16), datetime(2026, 11, 16, 18, 0, tzinfo=london), later)
+    assert rerun["status"] == "noop"
+    assert log.read_text(encoding="utf-8") == stored
+    assert load_book(log).cash == total
+
+
 def test_daily_code_does_not_call_a_model() -> None:
     daily = (ROOT / "src/sterling/research/invest/daily.py").read_text(encoding="utf-8")
     script = (ROOT / "scripts/run_invest_daily.py").read_text(encoding="utf-8")
@@ -127,6 +184,50 @@ def test_daily_code_does_not_call_a_model() -> None:
     assert "if: false" in workflow
     assert "cron:" not in workflow
     assert "XAI_API_KEY" not in workflow
+
+
+def _mark(log: Path, session: date, recorded_at: datetime, sonia: tuple[tuple[date, Decimal], ...]):
+    return run_daily(
+        log_path=log,
+        session=session,
+        opens={},
+        close_history={},
+        sonia=sonia,
+        recorded_at=recorded_at,
+        open_source="SYNTHETIC-open",
+        data_label="SYNTHETIC",
+    )
+
+
+def _interest_rows(log: Path) -> list[tuple[str, Decimal, Decimal]]:
+    import json
+
+    rows = []
+    for line in log.read_text(encoding="utf-8").splitlines():
+        record = json.loads(line)
+        if record.get("record_type") != "cash_interest":
+            continue
+        assert str(record["published_on"]) <= str(record["session"])
+        assert record["sonia_percent"] != "9.00"
+        rows.append((str(record["session"]), Decimal(str(record["amount_gbp"])), Decimal(str(record["annual_decimal"]))))
+    return rows
+
+
+def _accrued(cash: Decimal, rates: list[Decimal]) -> Decimal:
+    total = Decimal("0.00")
+    balance = cash
+    for rate in rates:
+        amount = quantize_money(balance * rate / Decimal(365))
+        balance += amount
+        total += amount
+    return total
+
+
+def _replay_cash(rows: list[tuple[str, Decimal, Decimal]]) -> Decimal:
+    balance = Decimal("10000.00")
+    for _day, amount, _rate in rows:
+        balance = quantize_money(balance + amount)
+    return balance
 
 
 def _decide(log: Path) -> None:

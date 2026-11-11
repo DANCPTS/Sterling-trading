@@ -1,9 +1,14 @@
 """Daily paper settlement. No model is called.
 
 Opens are the caller's genuine next-session opening prices. A missing open
-stays pending and is recorded as ``fill_skipped``. A close is never used as a
-silent substitute for that open. Yahoo's daily chart open is the live source
-(``yahoo-open``). Synthetic demos must label their own source.
+stays pending and is recorded as ``fill_skipped``. The position then fills on
+the next session whose open is actually published, and never on a session
+before the decision. A close is never used as a silent substitute for that
+open. Yahoo's daily chart open is the live source (``yahoo-open``). Synthetic
+demos must label their own source. Cash interest that has no published SONIA
+print is left unaccrued and is retried on a later session, including a gap
+under a more recent accrual. A print that was not published by the job's
+clock is not used.
 """
 
 from __future__ import annotations
@@ -52,12 +57,15 @@ def run_daily(
     book, interest_days, filled, skipped_notes = _replay(records)
     moment = recorded_at
     quote = cash_quote(sonia, session, as_of=recorded_at)
-    for day in _interest_due(session, interest_days):
+    credited: dict[date, Decimal] = {}
+    for day in _interest_due(session, interest_days, records):
         day_quote = cash_quote(sonia, day, as_of=recorded_at)
         if day_quote is None:
             continue
         rate = day_quote.annual_decimal
-        amount = accrue_cash(book, rate)
+        base = _cash_before(records, day) + sum(value for prior, value in credited.items() if prior < day)
+        amount = _credit_interest(book, base, rate)
+        credited[day] = amount
         fields = {
             "amount_gbp": format(amount, "f"),
             "annual_decimal": format(rate, "f"),
@@ -82,7 +90,14 @@ def run_daily(
         key = (session.isoformat(), ticker)
         if key in filled:
             continue
-        reason = _fill_block(session, eligible, opened, recorded_at, ticker in opens)
+        reason = _fill_block(
+            session,
+            eligible,
+            opened,
+            recorded_at,
+            ticker in opens,
+            _earlier_opens_missing(eligible, session, ticker, skipped_notes),
+        )
         if reason is not None:
             skipped.append(ticker)
             if key not in skipped_notes:
@@ -184,6 +199,32 @@ def _marks(
     return prices, statuses
 
 
+def _credit_interest(book: Book, base: Decimal, annual_rate: Decimal) -> Decimal:
+    """Credit one day on ``base``. A gap uses the cash from before later accruals."""
+    if base == book.cash:
+        return accrue_cash(book, annual_rate)
+    rate = annual_rate if annual_rate > 0 else ZERO
+    amount = quantize_money(base * rate / Decimal(365))
+    book.cash = quantize_money(book.cash + amount)
+    book.interest = quantize_money(book.interest + amount)
+    return amount
+
+
+def _cash_before(records: Sequence[Mapping[str, object]], day: date) -> Decimal:
+    """Cash at the interest step of ``day``: earlier fills and interest only."""
+    cash = START_NAV
+    for record in records:
+        kind = record.get("record_type")
+        text = record.get("session")
+        if not isinstance(text, str) or date.fromisoformat(text) >= day:
+            continue
+        if kind == "cash_interest":
+            cash += Decimal(str(record.get("amount_gbp")))
+        elif kind == "fill":
+            cash += Decimal(str(record.get("cash_delta_gbp")))
+    return quantize_money(cash)
+
+
 def _can_size(book: Book, prices: Mapping[str, Decimal]) -> bool:
     for ticker in FUNDS:
         if book.quantity(ticker) > 0 and ticker not in prices:
@@ -197,26 +238,44 @@ def _fill_block(
     opened: datetime | None,
     recorded_at: datetime,
     has_open: bool,
+    earlier_opens_missing: bool,
 ) -> str | None:
     """None means this session's open may fill. Any other string is a skip reason."""
     if eligible is None:
         return "decision_time_missing"
     if opened is None or session < eligible:
         return "open_not_after_decision"
-    if session > eligible:
+    if session > eligible and not earlier_opens_missing:
         return "not_first_open_after_decision"
     if opened > recorded_at or not has_open:
         return "opening_price_unavailable"
     return None
 
 
+def _earlier_opens_missing(
+    eligible: date | None,
+    session: date,
+    ticker: str,
+    skipped: Mapping[tuple[str, str], str],
+) -> bool:
+    """True when every session from the first eligible day up to this one lacked an open."""
+    if eligible is None or session <= eligible:
+        return False
+    day = eligible
+    while day < session:
+        if session_open(day) is not None and skipped.get((day.isoformat(), ticker)) != "opening_price_unavailable":
+            return False
+        day += timedelta(days=1)
+    return True
+
+
 def _replay(
     records: Sequence[Mapping[str, object]],
-) -> tuple[Book, set[str], set[tuple[str, str]], set[tuple[str, str]]]:
+) -> tuple[Book, set[str], set[tuple[str, str]], dict[tuple[str, str], str]]:
     book = Book()
     interest: set[str] = set()
     filled: set[tuple[str, str]] = set()
-    skipped: set[tuple[str, str]] = set()
+    skipped: dict[tuple[str, str], str] = {}
     pending: dict[str, Decimal] | None = None
     for record in records:
         kind = record.get("record_type")
@@ -226,14 +285,14 @@ def _replay(
             if isinstance(raw, dict):
                 pending = {str(name): Decimal(str(value)) for name, value in raw.items()}
             filled = set()
-            skipped = set()
+            skipped = {}
             book.pending = pending
             book.decided_at = _decision_time(record)
         elif kind == "fill":
             _apply_fill(book, record)
             filled.add((str(record.get("session")), str(record.get("fund"))))
         elif kind == "fill_skipped":
-            skipped.add((str(record.get("session")), str(record.get("fund"))))
+            skipped[(str(record.get("session")), str(record.get("fund")))] = str(record.get("reason"))
         elif kind == "cash_interest":
             book.cash = quantize_money(book.cash + Decimal(str(record.get("amount_gbp"))))
             interest.add(str(record.get("session")))
@@ -331,13 +390,26 @@ def _has(records: Sequence[Mapping[str, object]], kind: str, session: date) -> b
     return any(record.get("record_type") == kind and record.get("session") == token for record in records)
 
 
-def _interest_due(session: date, already: set[str]) -> list[date]:
-    """Calendar days since the previous interest record, including this session."""
-    if not already:
-        return [session]
-    last = max(date.fromisoformat(item) for item in already)
+def _interest_due(session: date, already: set[str], records: Sequence[Mapping[str, object]]) -> list[date]:
+    """Calendar days from the first logged session through today that have not accrued.
+
+    A day with no published print is absent from ``already`` and is tried again
+    later. A newer accrual does not hide that gap. Days after ``session`` are
+    not included.
+    """
+    origin = session
+    for record in records:
+        text = record.get("session")
+        if isinstance(text, str):
+            day = date.fromisoformat(text)
+            if day < origin:
+                origin = day
+    for item in already:
+        day = date.fromisoformat(item)
+        if day < origin:
+            origin = day
     days: list[date] = []
-    cursor = last + timedelta(days=1)
+    cursor = origin
     while cursor <= session:
         if cursor.isoformat() not in already:
             days.append(cursor)

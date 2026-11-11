@@ -75,6 +75,31 @@ def test_same_day_and_earlier_sessions_do_not_fill(tmp_path: Path, stamped: None
     assert '"record_type":"fill"' in morning.read_text(encoding="utf-8")
 
 
+def test_missing_first_open_fills_on_the_next_session(tmp_path: Path, stamped: None) -> None:
+    del stamped
+    log = tmp_path / "lane.jsonl"
+    decision = datetime(2026, 11, 11, 18, 0, tzinfo=LONDON)
+    _decide(log, decision)
+    before = _day(log, date(2026, 11, 11), datetime(2026, 11, 11, 16, 30, tzinfo=LONDON))
+    assert before["status"] == "marked"
+    assert '"record_type":"fill"' not in log.read_text(encoding="utf-8")
+    thursday = _day(log, date(2026, 11, 12), datetime(2026, 11, 12, 16, 30, tzinfo=LONDON), opens={})
+    assert thursday["status"] == "marked"
+    waiting = log.read_text(encoding="utf-8")
+    assert '"record_type":"fill"' not in waiting
+    assert waiting.count("opening_price_unavailable") == len(FUNDS)
+    friday = _day(log, date(2026, 11, 13), datetime(2026, 11, 13, 16, 30, tzinfo=LONDON))
+    assert friday["status"] == "marked"
+    filled = log.read_text(encoding="utf-8")
+    assert filled.count('"record_type":"fill"') == len(FUNDS)
+    for line in filled.splitlines():
+        if '"record_type":"fill"' in line:
+            assert '"session":"2026-11-13"' in line
+    retry = _day(log, date(2026, 11, 13), datetime(2026, 11, 13, 18, 0, tzinfo=LONDON))
+    assert retry["status"] == "noop"
+    assert log.read_text(encoding="utf-8").count('"record_type":"fill"') == len(FUNDS)
+
+
 def test_sonia_csv_and_publication_lag() -> None:
     text = "DATE,IUDSOIA\n09 Nov 2026,3.9684\n10 Nov 2026,3.9701\n"
     parsed = parse_sonia_csv(text)
@@ -127,11 +152,11 @@ def _decide(log: Path, when: datetime) -> None:
     )
 
 
-def _day(log: Path, session: date, recorded_at: datetime):
+def _day(log: Path, session: date, recorded_at: datetime, opens: dict[str, Decimal] | None = None):
     return run_daily(
         log_path=log,
         session=session,
-        opens={name: Decimal("101") for name in FUNDS},
+        opens={name: Decimal("101") for name in FUNDS} if opens is None else opens,
         close_history={name: ((session, Decimal("101")),) for name in FUNDS},
         sonia=SONIA,
         recorded_at=recorded_at,
