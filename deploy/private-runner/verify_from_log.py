@@ -13,6 +13,7 @@ from pathlib import Path
 from sterling.research.fx.grok_forward import ProposalLog
 from sterling.research.grok.portfolio import replay, state_hash
 from sterling.research.grok.verify import verify_evidence_lane, verify_modes
+from sterling.research.invest.verify import verify_invest, verify_v1_closed
 
 
 def stamp_tip(digest: str, *, enabled: bool) -> str:
@@ -28,10 +29,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     log = ProposalLog(args.log)
     count = log.verify()
-    verify_evidence_lane(log.records(), lane="mock" if args.log.parent.name == "mock" else "forward")
-    mode = verify_modes(log.records(), now=datetime.now(UTC))
-    book = replay(log.records())
-    print(f"ok records={count} mode={mode} state_hash={state_hash(book)} cash_gbp={book.cash}")
+    lane = "mock" if "mock" in args.log.parts else "forward"
+    verify_evidence_lane(log.records(), lane=lane)
+    if "invest-v2" in args.log.parts:
+        verify_invest(log.records(), lane=lane)
+        print(f"ok records={count} experiment=paper-v2 lane={lane}")
+    else:
+        verify_v1_closed(log.records())
+        mode = verify_modes(log.records(), now=datetime.now(UTC))
+        book = replay(log.records())
+        print(f"ok records={count} mode={mode} state_hash={state_hash(book)} cash_gbp={book.cash}")
     print(stamp_tip(str(log.records()[-1].get("record_hash")), enabled=args.stamp))
     return 0
 

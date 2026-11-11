@@ -17,6 +17,7 @@ from decimal import Decimal
 from sterling.research.errors import ResearchError, ResearchIsolationError
 from sterling.research.fx.grok_forward import require_utc
 from sterling.research.grok.schema import MarketSnapshot, current_weights
+from sterling.research.invest.schema import CASH, FUNDS, allocation_json
 from sterling.research.money import ZERO, quantize_weight_down
 
 XAI_ENV_KEY = "XAI_API_KEY"
@@ -53,9 +54,12 @@ class MockGrokProvider:
     bars, and it does not choose the frozen rules parameters.
     """
 
-    def __init__(self, steps: Sequence[ScriptStep] = (), *, seed: int = 0) -> None:
+    def __init__(self, steps: Sequence[ScriptStep] = (), *, seed: int = 0, response_format: str = "proposals") -> None:
+        if response_format not in {"proposals", "allocation"}:
+            raise ResearchError("mock response format must be proposals or allocation")
         self._steps = list(steps)
         self._seed = seed
+        self._response_format = response_format
         self.calls = 0
 
     def complete(self, snapshot: MarketSnapshot, *, prompt: str) -> ProviderEnvelope:
@@ -68,11 +72,13 @@ class MockGrokProvider:
                 responded_at=require_utc(snapshot.as_of + step.responded_after),
                 raw_response=step.raw_response,
             )
-        return ProviderEnvelope(
-            model_id=f"mock-grok-{self._seed}",
-            responded_at=require_utc(snapshot.as_of),
-            raw_response=_equal_weight_response(snapshot, model_id=f"mock-grok-{self._seed}"),
+        model_id = f"mock-grok-{self._seed}"
+        raw = (
+            _allocation_response(model_id)
+            if self._response_format == "allocation"
+            else _equal_weight_response(snapshot, model_id=model_id)
         )
+        return ProviderEnvelope(model_id=model_id, responded_at=require_utc(snapshot.as_of), raw_response=raw)
 
 
 class XaiGrokProvider:
@@ -128,3 +134,9 @@ def _equal_weight_response(snapshot: MarketSnapshot, *, model_id: str) -> str:
             }
         )
     return json.dumps({"model_id": model_id, "proposals": proposals}, sort_keys=True, separators=(",", ":"))
+
+
+def _allocation_response(model_id: str) -> str:
+    weight = format((Decimal(1) / Decimal(7)), "f")
+    weights = {name: weight for name in (*FUNDS, CASH)}
+    return allocation_json(weights, model_id=model_id)
