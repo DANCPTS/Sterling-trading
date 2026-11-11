@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -83,6 +84,112 @@ def test_mock_and_forward_logs_reject_each_other(tmp_path: Path, monkeypatch: py
     verify_evidence_lane(forward.records(), lane="forward")
     with pytest.raises(ResearchError, match="forward record"):
         verify_evidence_lane(forward.records(), lane="mock")
+
+
+def _clean_python(tmp: Path) -> Path:
+    venv = tmp / "clean-venv"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True, capture_output=True)
+    python = venv / "bin" / "python"
+    env = {"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", str(tmp)), "PYTHONNOUSERSITE": "1"}
+    probe = subprocess.run([str(python), "-c", "import sterling"], env=env, capture_output=True, text=True)
+    assert probe.returncode != 0, probe.stderr
+    return python
+
+
+def _run_clean(python: Path, private: Path, app: Path, pin: Path, *extra: str) -> subprocess.CompletedProcess[str]:
+    env = {"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", str(private)), "PYTHONNOUSERSITE": "1"}
+    if "xai" in extra:
+        env["XAI_API_KEY"] = SECRET_KEY
+        env["STERLING_XAI_OFFLINE"] = "1"
+    return subprocess.run(
+        [
+            str(python),
+            str(private / "deploy" / "private-runner" / "run_private.py"),
+            "--app",
+            str(app),
+            "--evidence",
+            str(private),
+            "--pin-file",
+            str(pin),
+            *extra,
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_clean_env_publishes_without_a_second_call(tmp_path: Path) -> None:
+    app, sha = _app_commit(tmp_path)
+    private = _private(tmp_path)
+    shutil.copytree(RUNNER, private / "deploy" / "private-runner")
+    pin = private / "deploy" / "private-runner" / "pinned_app_sha.txt"
+    pin.write_text(sha + "\n", encoding="utf-8")
+    python = _clean_python(tmp_path)
+    mock = _run_clean(
+        python,
+        private,
+        app,
+        pin,
+        "--event",
+        "workflow_dispatch",
+        "--provider",
+        "mock",
+        "--as-of",
+        "2026-11-02T16:30:00+00:00",
+    )
+    assert mock.returncode == 0, mock.stderr
+    assert "provider_calls=1" in mock.stdout
+    assert "ModuleNotFoundError" not in mock.stderr
+    hook = private / ".git" / "hooks" / "pre-push"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    blocked = _run_clean(
+        python,
+        private,
+        app,
+        pin,
+        "--event",
+        "workflow_dispatch",
+        "--provider",
+        "xai",
+        "--allow-offline-xai",
+        "--as-of",
+        "2026-11-02T16:30:00+00:00",
+    )
+    assert blocked.returncode != 0
+    assert "provider_calls=1" in blocked.stdout
+    forward = private / "evidence" / "forward.jsonl"
+    assert forward.is_file()
+    assert forward.read_text(encoding="utf-8").count('"record_type":"model_usage"') == 1
+    hook.unlink()
+    retried = _run_clean(
+        python,
+        private,
+        app,
+        pin,
+        "--event",
+        "workflow_dispatch",
+        "--provider",
+        "xai",
+        "--allow-offline-xai",
+        "--as-of",
+        "2026-11-02T16:30:00+00:00",
+    )
+    assert retried.returncode == 0, retried.stderr
+    assert "provider_calls=0" in retried.stdout
+    assert "provider_calls=1" not in retried.stdout
+    stored = forward.read_text(encoding="utf-8")
+    assert stored.count('"record_type":"model_usage"') == 1
+    remote = subprocess.run(
+        ["git", "--git-dir", str(tmp_path / "private.git"), "show", "evidence:evidence/forward.jsonl"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert remote.stdout.count('"record_type":"model_usage"') == 1
+    assert SECRET_KEY not in remote.stdout
 
 
 def test_provider_selection_never_falls_back_silently() -> None:

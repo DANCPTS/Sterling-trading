@@ -92,13 +92,15 @@ def run(argv: list[str] | None = None) -> int:
         command.extend(["--fixture", "--simulated-clock", "--as-of", args.as_of])
     else:
         command.append("--fetch-free")
-    completed = subprocess.run(command, check=False, env={**env, "PYTHONPATH": str(args.app / "src")})
+    # The private checkout does not install sterling. Every child must see the pinned app.
+    child = {**env, "PYTHONPATH": str(args.app / "src")}
+    completed = subprocess.run(command, check=False, env=child)
     if completed.returncode != 0:
         raise RuntimeError("weekly decision failed")
     verify = subprocess.run(
         [sys.executable, str(ROOT / "verify_from_log.py"), "--log", str(args.evidence / log_name)],
         check=False,
-        env={**env, "PYTHONPATH": str(args.app / "src")},
+        env=child,
     )
     if verify.returncode != 0:
         raise RuntimeError("verifier failed")
@@ -114,6 +116,7 @@ def run(argv: list[str] | None = None) -> int:
             "origin",
         ],
         check=False,
+        env=child,
     )
     if publish.returncode != 0:
         raise RuntimeError("evidence push failed")
