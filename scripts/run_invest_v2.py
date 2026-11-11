@@ -12,6 +12,7 @@ from pathlib import Path
 
 from sterling.research.grok.providers import MockGrokProvider, ProviderEnvelope
 from sterling.research.invest.book import Book
+from sterling.research.invest.daily import load_book
 from sterling.research.invest.decide import run_invest_week
 from sterling.research.invest.schema import ALLOCATION_SCHEMA, FUNDS
 
@@ -37,9 +38,10 @@ def main(argv: list[str] | None = None) -> int:
         prices = _live_prices(args.cache or Path("evidence"))
         mode = "forward"
     provider = _provider(args.provider, args.enable_xai)
+    book = load_book(args.log) if args.log.is_file() else Book()
     result = run_invest_week(
         log_path=args.log,
-        book=Book(),
+        book=book,
         prices=prices,
         tradable=set(prices),
         as_of=as_of,

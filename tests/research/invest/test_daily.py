@@ -13,7 +13,7 @@ from sterling.research.invest.book import Book
 from sterling.research.invest.cash_rate import HAIRCUT_PERCENTAGE_POINTS, cash_quote, parse_sonia_csv
 from sterling.research.invest.daily import run_daily
 from sterling.research.invest.decide import run_invest_week
-from sterling.research.invest.report import write_dashboard
+from sterling.research.invest.report import _money, _pct, write_dashboard
 from sterling.research.invest.schema import CASH, FUNDS, allocation_json
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -26,6 +26,15 @@ def stamped(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("STERLING_SYSTEM", "sterling-invest")
     monkeypatch.setenv("STERLING_EXPERIMENT", "paper-v2")
     monkeypatch.setenv("STERLING_EVIDENCE_LANE", "mock")
+
+
+def test_dashboard_formats_money_and_percentages() -> None:
+    assert _money("10613.0912") == "10,613.09"
+    assert _money("19.780") == "19.78"
+    assert _pct("0.061309") == "6.13%"
+    assert _pct("0.000761") == "0.08%"
+    assert "." in _pct("0.000761")
+    assert "0.000761" not in _pct("0.000761")
 
 
 def test_sonia_ignores_a_later_print() -> None:

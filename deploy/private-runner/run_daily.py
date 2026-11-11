@@ -20,6 +20,10 @@ def run(argv: list[str] | None = None) -> int:
     parser.add_argument("--pin-file", type=Path, required=True)
     parser.add_argument("--session", required=True)
     parser.add_argument("--lane", choices=("mock", "forward"), default="forward")
+    parser.add_argument("--label", default="live")
+    parser.add_argument("--opens", default="")
+    parser.add_argument("--closes", default="")
+    parser.add_argument("--sonia-csv", default="")
     parsed = parser.parse_args(argv)
     pin = read_pin(parsed.pin_file)
     if app_head(parsed.app) != pin:
@@ -41,8 +45,14 @@ def run(argv: list[str] | None = None) -> int:
         "--session",
         parsed.session,
         "--label",
-        "live",
+        parsed.label,
     ]
+    if parsed.opens:
+        command.extend(["--opens", parsed.opens])
+    if parsed.closes:
+        command.extend(["--closes", parsed.closes])
+    if parsed.sonia_csv:
+        command.extend(["--sonia-csv", parsed.sonia_csv])
     completed = subprocess.run(command, check=False, env=child)
     if completed.returncode != 0:
         raise RuntimeError("daily settlement failed")
