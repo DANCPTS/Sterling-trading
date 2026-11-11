@@ -11,7 +11,7 @@ ENV_URL = "HEALTHCHECKS_PING_URL"
 
 
 def ping(url: str, *, failed: bool, opener: Callable[[str], object] | None = None) -> None:
-    if not url.startswith("https://"):
+    if not (url.startswith("https://") or url.startswith("http://127.0.0.1:") or url.startswith("http://localhost:")):
         raise RuntimeError("healthchecks URL is missing")
     target = url.rstrip("/") + ("/fail" if failed else "")
     send = opener or _open

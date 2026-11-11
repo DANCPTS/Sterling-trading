@@ -10,7 +10,7 @@ Do not copy the workflow into `.github/workflows` of the public repo.
 3. The workflow job is `if: false`. Leave it that way until the checks below pass.
 4. Turn on branch protection for `main`: require a pull request, no force-push, and do not let the Actions token bypass it.
    Create an `evidence` branch for the log. Do not protect it with a pull-request rule. Disable force-push on it.
-   The workflow checks out `evidence` and `publish_evidence.py` refuses every other branch. It pushes with `--ff-only`.
+   The publisher commits on a detached worktree of `evidence` and leaves the `main` checkout where it is. It sets a command-local git identity and never runs `git config --global`. It pushes fast-forward only and never uses `--force`.
    If the remote moved, new local records are re-appended onto that chain. A remote line is not deleted.
    The workflow concurrency group allows one job, and the publisher also takes a lock in the clone.
    A manual dispatch accepts `mock` (the default) or `xai`. Any other value fails.

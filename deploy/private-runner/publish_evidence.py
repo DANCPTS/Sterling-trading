@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import subprocess
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -24,6 +25,13 @@ LOGS = {
     "evidence/forward.jsonl": "forward",
     "evidence/mock/forward.jsonl": "mock",
 }
+# Command-local identity. Never git config --global.
+_IDENTITY = (
+    "-c",
+    "user.name=sterling-forward-runner",
+    "-c",
+    "user.email=sterling-forward-runner@users.noreply.github.com",
+)
 
 
 def publish(clone: Path, *, branch: str = "evidence", remote: str = "origin") -> str:
@@ -36,7 +44,11 @@ def publish(clone: Path, *, branch: str = "evidence", remote: str = "origin") ->
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return "skipped_locked"
-        _git(clone, "fetch", remote, check=False)
+        caller = _stdout(clone, "rev-parse", "--abbrev-ref", "HEAD")
+        caller_sha = _stdout(clone, "rev-parse", "HEAD")
+        _git(clone, "fetch", remote, branch, check=False)
+        if not _remote_exists(clone, remote, branch):
+            raise RuntimeError("evidence branch does not exist on the remote")
         present = [name for name in LOGS if (clone / name).is_file()]
         if not present:
             raise RuntimeError("local evidence log is missing")
@@ -53,36 +65,44 @@ def publish(clone: Path, *, branch: str = "evidence", remote: str = "origin") ->
             for name in present
             if (clone / name).with_suffix(".state.json").is_file()
         }
-        observed = clone / "evidence" / "first_observed.json"
-        observed_text = observed.read_text(encoding="utf-8") if observed.is_file() else None
-        if _remote_exists(clone, remote, branch):
-            _git(clone, "checkout", "-f", "-B", branch, f"{remote}/{branch}")
-        else:
-            _git(clone, "checkout", "-B", branch)
-        for name, text in merged.items():
-            local = clone / name
-            local.parent.mkdir(parents=True, exist_ok=True)
-            local.write_text(text, encoding="utf-8")
-            log = ProposalLog(local)
-            log.verify()
-            verify_evidence_lane(log.records(), lane=LOGS[name])
-            _git(clone, "add", name)
-            if name in states:
-                state = local.with_suffix(".state.json")
-                state.write_text(states[name], encoding="utf-8")
-                _git(clone, "add", str(state.relative_to(clone)))
-        if observed_text is not None:
-            observed.parent.mkdir(parents=True, exist_ok=True)
-            observed.write_text(observed_text, encoding="utf-8")
-            _git(clone, "add", "evidence/first_observed.json")
-        if subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=clone, check=False).returncode == 0:
-            return "unchanged"
-        _git(clone, "commit", "-m", "Record the weekly forward log")
-        if _remote_exists(clone, remote, branch):
-            _git(clone, "merge-base", "--is-ancestor", f"{remote}/{branch}", "HEAD")
-        # No --force. A non-fast-forward update is rejected by git.
-        _git(clone, "push", remote, f"HEAD:{branch}")
-        return "pushed"
+        observed_path = clone / "evidence" / "first_observed.json"
+        observed_text = observed_path.read_text(encoding="utf-8") if observed_path.is_file() else None
+        tip = _stdout(clone, "rev-parse", f"{remote}/{branch}")
+        work = Path(tempfile.mkdtemp(prefix="sterling-evidence-"))
+        work.rmdir()
+        _git(clone, "worktree", "add", "--detach", str(work), tip)
+        try:
+            for name, text in merged.items():
+                local = work / name
+                local.parent.mkdir(parents=True, exist_ok=True)
+                local.write_text(text, encoding="utf-8")
+                log = ProposalLog(local)
+                log.verify()
+                verify_evidence_lane(log.records(), lane=LOGS[name])
+                _git(work, "add", name)
+                if name in states:
+                    state = local.with_suffix(".state.json")
+                    state.write_text(states[name], encoding="utf-8")
+                    _git(work, "add", str(state.relative_to(work)))
+            if observed_text is not None:
+                dest = work / "evidence" / "first_observed.json"
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_text(observed_text, encoding="utf-8")
+                _git(work, "add", "evidence/first_observed.json")
+            quiet = subprocess.run(["git", *_IDENTITY, "diff", "--cached", "--quiet"], cwd=work, check=False)
+            if quiet.returncode == 0:
+                return "unchanged"
+            _git(work, "commit", "-m", "Record the weekly forward log")
+            _git(work, "merge-base", "--is-ancestor", tip, "HEAD")
+            # No --force. A non-fast-forward update is rejected by git.
+            _git(work, "push", remote, f"HEAD:{branch}")
+            return "pushed"
+        finally:
+            _git(clone, "worktree", "remove", "--force", str(work), check=False)
+            if _stdout(clone, "rev-parse", "--abbrev-ref", "HEAD") != caller:
+                raise RuntimeError("publisher switched the caller checkout")
+            if _stdout(clone, "rev-parse", "HEAD") != caller_sha:
+                raise RuntimeError("publisher moved the caller checkout")
 
 
 def _merge(remote_text: str, local_text: str, folder: Path) -> str:
@@ -133,8 +153,15 @@ def _remote_exists(clone: Path, remote: str, branch: str) -> bool:
     return show.returncode == 0
 
 
+def _stdout(clone: Path, *args: str) -> str:
+    completed = subprocess.run(["git", *_IDENTITY, *args], cwd=clone, check=False, capture_output=True, text=True)
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or "git failed")
+    return completed.stdout.strip()
+
+
 def _git(clone: Path, *args: str, check: bool = True) -> None:
-    completed = subprocess.run(["git", *args], cwd=clone, check=False, capture_output=True, text=True)
+    completed = subprocess.run(["git", *_IDENTITY, *args], cwd=clone, check=False, capture_output=True, text=True)
     if check and completed.returncode != 0:
         raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or "git failed")
 
