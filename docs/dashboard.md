@@ -2,9 +2,11 @@
 
 Read-only page for the paper-v2 log. It does not place orders, call a model, or open a public site.
 
-## Windows preview
+## Windows
 
-From the repository root, with Python 3.11 or newer:
+On the PC where `python` is the Microsoft Store stub, use [windows-dashboard.md](windows-dashboard.md). Double-click `deploy\windows\Sterling-Dashboard.cmd` after the one-time setup. That opens the verified private mock log, not the synthetic fixture.
+
+The synthetic preview, from a machine that already has Python 3.11 or newer:
 
 ```text
 py -m sterling.research.invest.preview --out dashboard.html --no-serve
