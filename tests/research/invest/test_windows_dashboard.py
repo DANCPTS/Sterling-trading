@@ -51,6 +51,8 @@ def test_mock_import_flags_the_old_baseline_and_keeps_the_last_page(tmp_path: Pa
     kept = page.read_text(encoding="utf-8")
     assert "CHECK FAILED" in kept
     assert "Fetched origin/evidence" not in kept
+    assert "Evidence commit abc123" in kept
+    assert "Last valuation 2026-11-13" in kept
     assert "2.00%" in kept
     assert "MOCK / PAPER" in kept
     forward = tmp_path / "forward.jsonl"

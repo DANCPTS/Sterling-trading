@@ -113,7 +113,7 @@ try {
     & $python -m sterling.research.invest.import_dashboard --log $extracted --out $dashboard --lane $Lane --evidence-sha $sha --fetched $fetched
     $code = $LASTEXITCODE
     if ($code -ne 0) {
-        Write-Host "OFFLINE PAGE KEPT. Import failed. The previous verified dashboard was kept and was not replaced."
+        Write-Host "CHECK FAILED. Import failed. The previous verified dashboard was kept and was not replaced."
         if ((Test-Path -LiteralPath $dashboard) -and -not $NoBrowser) { Start-Process -FilePath $dashboard }
         exit $code
     }

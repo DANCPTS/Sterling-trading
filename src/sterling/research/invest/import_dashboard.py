@@ -11,12 +11,14 @@ does not replace ``--out``.
 from __future__ import annotations
 
 import argparse
+import html
 import re
 import sys
 from pathlib import Path
 
 from sterling.research.errors import ResearchError
 from sterling.research.fx.grok_forward import ProposalLog
+from sterling.research.invest.dashboard import _esc
 from sterling.research.invest.report import write_dashboard
 
 
@@ -107,11 +109,16 @@ def mark_kept(destination: Path) -> None:
     text = destination.read_text(encoding="utf-8")
     if 'id="evidence-fetch"' not in text:
         return
-    banner = (
-        '<p id="evidence-fetch" class="warn">'
-        "CHECK FAILED. The previous verified page was kept and was not replaced. "
-        "It is not a new fetch.</p>"
-    )
+    previous = re.search(r'<p id="evidence-fetch"[^>]*>(.*?)</p>', text, flags=re.DOTALL)
+    body = html.unescape(previous.group(1)) if previous else ""
+    sha_match = re.search(r"\b([0-9a-f]{6,40})\b", body)
+    session_match = re.search(r"Last valuation ([0-9]{4}-[0-9]{2}-[0-9]{2})", body)
+    kept = "CHECK FAILED. The previous verified page was kept and was not replaced. It is not a new fetch."
+    if sha_match:
+        kept += f" Evidence commit {sha_match.group(1)}."
+    if session_match:
+        kept += f" Last valuation {session_match.group(1)}."
+    banner = f'<p id="evidence-fetch" class="warn">{_esc(kept)}</p>'
     updated = re.sub(r'<p id="evidence-fetch"[^>]*>.*?</p>', banner, text, count=1, flags=re.DOTALL)
     if updated == text:
         return
