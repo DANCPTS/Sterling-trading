@@ -193,6 +193,47 @@ def test_sonia_gap_before_a_later_accrual_is_backfilled_once(tmp_path: Path, sta
     assert load_book(log).cash == total
 
 
+def test_cumulative_return_uses_starting_capital_across_sessions(tmp_path: Path, stamped: None) -> None:
+    del stamped
+    log = tmp_path / "returns.jsonl"
+    _decide(log)
+    first = date(2026, 11, 3)
+    second = date(2026, 11, 4)
+    _valued(log, first, Decimal("100"), datetime(2026, 11, 3, 16, 30, tzinfo=UTC))
+    _valued(log, second, Decimal("110"), datetime(2026, 11, 4, 16, 30, tzinfo=UTC))
+    rows = _valuations(log)
+    assert [row["session"] for row in rows] == ["2026-11-03", "2026-11-04"]
+    start = Decimal("10000.00")
+    previous = start
+    peak = start
+    worst = Decimal(0)
+    for record in rows:
+        nav = Decimal(str(record["nav_gbp"]))
+        cash = Decimal(str(record["cash_gbp"]))
+        marked = cash
+        holdings = record["holdings"]
+        prices = record["prices"]
+        assert isinstance(holdings, dict) and isinstance(prices, dict)
+        for name, units in holdings.items():
+            info = prices[name]
+            assert isinstance(info, dict)
+            marked += Decimal(str(units)) * Decimal(str(info["price_gbp"]))
+        assert abs(marked - nav) <= Decimal("0.05")
+        assert Decimal(str(record["daily_pnl_gbp"])) == nav - previous
+        assert Decimal(str(record["cumulative_return"])) == (nav / start) - 1
+        high_water = Decimal(str(record["high_water_gbp"]))
+        assert high_water >= start and high_water >= nav and high_water >= peak
+        current = (high_water - nav) / high_water if high_water > 0 and nav < high_water else Decimal(0)
+        assert Decimal(str(record["drawdown"])) + Decimal("0.000000001") >= current
+        if worst is not None:
+            assert Decimal(str(record["drawdown"])) + Decimal("0.000000001") >= worst
+        worst = Decimal(str(record["drawdown"]))
+        peak = high_water
+        previous = nav
+    assert Decimal(str(rows[0]["nav_gbp"])) != start
+    assert Decimal(str(rows[1]["cumulative_return"])) != (Decimal(str(rows[1]["nav_gbp"])) / Decimal(str(rows[0]["nav_gbp"]))) - 1
+
+
 def test_daily_code_does_not_call_a_model() -> None:
     daily = (ROOT / "src/sterling/research/invest/daily.py").read_text(encoding="utf-8")
     script = (ROOT / "scripts/run_invest_daily.py").read_text(encoding="utf-8")
@@ -202,6 +243,30 @@ def test_daily_code_does_not_call_a_model() -> None:
     assert "if: false" in workflow
     assert "cron:" not in workflow
     assert "XAI_API_KEY" not in workflow
+
+
+def _valued(log: Path, session: date, price: Decimal, recorded_at: datetime):
+    return run_daily(
+        log_path=log,
+        session=session,
+        opens={name: price for name in FUNDS},
+        close_history={name: ((session, price),) for name in FUNDS},
+        sonia=SONIA,
+        recorded_at=recorded_at,
+        open_source="SYNTHETIC-open",
+        data_label="SYNTHETIC",
+    )
+
+
+def _valuations(log: Path) -> list[dict[str, object]]:
+    import json
+
+    rows = []
+    for line in log.read_text(encoding="utf-8").splitlines():
+        record = json.loads(line)
+        if record.get("record_type") == "valuation":
+            rows.append(record)
+    return rows
 
 
 def _mark(log: Path, session: date, recorded_at: datetime, sonia: tuple[tuple[date, Decimal], ...]):

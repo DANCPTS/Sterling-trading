@@ -387,7 +387,9 @@ def _valuation(
     data_label: str,
 ) -> dict[str, object]:
     history = book.nav_rows[:-1]
-    start = history[0][1] if history else START_NAV
+    # Cumulative return is against the £10,000 starting capital. The first
+    # recorded mark is already after costs, so it is not the baseline.
+    start = START_NAV
     previous = history[-1][1] if history else START_NAV
     cumulative = (nav / start - 1) if start > 0 else ZERO
     period = (nav / previous - 1) if previous > 0 else ZERO
