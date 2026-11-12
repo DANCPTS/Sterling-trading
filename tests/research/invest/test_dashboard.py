@@ -19,6 +19,7 @@ from sterling.research.invest.decide import run_invest_week
 from sterling.research.invest.preview import build_synthetic_log, main
 from sterling.research.invest.report import write_dashboard
 from sterling.research.invest.schema import CASH, FUNDS, allocation_json
+from sterling.research.invest.verify import ledger_warnings, verify_invest
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -164,6 +165,56 @@ def test_mismatched_return_is_shown_not_hidden() -> None:
     assert "3.50%" in html
     assert "2.83%" in html
     assert "Yahoo only" not in html
+
+
+def test_verifier_flags_an_old_return_without_rejecting_the_log() -> None:
+    records = (
+        {
+            "system": "sterling-invest",
+            "experiment": "paper-v2",
+            "evidence_lane": "mock",
+            "record_type": "decision",
+            "gate": "accepted",
+            "cash_gbp": "10000.00",
+            "derived_actions": {"VWRP": "BUY"},
+        },
+        {
+            "system": "sterling-invest",
+            "experiment": "paper-v2",
+            "evidence_lane": "mock",
+            "record_type": "valuation",
+            "session": "2026-11-12",
+            "nav_gbp": "10349.69",
+            "cash_gbp": "10349.69",
+            "daily_pnl_gbp": "349.69",
+            "cumulative_return": "0.0283",
+            "drawdown": "0",
+            "high_water_gbp": "10349.69",
+            "holdings": {},
+            "prices": {},
+        },
+    )
+    verify_invest(records, lane="mock")
+    notes = ledger_warnings(records)
+    assert any("does not match NAV against starting capital" in note for note in notes)
+    assert any("3.50%" in note and "2.83%" in note for note in notes)
+
+
+def test_calendar_marks_weekends_as_no_session(tmp_path: Path, stamped: None) -> None:
+    del stamped
+    log = tmp_path / "synthetic.jsonl"
+    build_synthetic_log(log)
+    html = tmp_path / "page.html"
+    assert write_dashboard(log, html) == 0
+    text = html.read_text(encoding="utf-8")
+    assert "No session" in text
+    assert "November 2026" in text
+    assert 'data-label="Price"' in text
+    assert "tabular-nums" in text
+    assert "£" in text
+    from sterling.research.fx.grok_forward import ProposalLog
+
+    assert ledger_warnings(ProposalLog(log).records()) == []
 
 
 def test_renderer_escapes_a_reason() -> None:

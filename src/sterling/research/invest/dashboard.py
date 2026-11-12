@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import calendar
 import html
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from sterling.research.invest.report import _decimal, _money, _pct
+from sterling.research.invest.sessions import session_open
+from sterling.research.invest.verify import ledger_warnings
 
 LONDON = ZoneInfo("Europe/London")
 _YAHOO = "Yahoo only / not exchange verified"
@@ -36,7 +39,8 @@ def render_dashboard(records: Sequence[Mapping[str, object]]) -> str:
 <style>
 :root {{ color-scheme: dark; }}
 * {{ box-sizing: border-box; }}
-body {{ margin: 0; background: #0e1116; color: #e7ecf3; font-family: "Segoe UI", system-ui, sans-serif; }}
+body {{ margin: 0; background: #0e1116; color: #e7ecf3;
+  font-family: "Segoe UI", system-ui, sans-serif; font-variant-numeric: tabular-nums; }}
 header, main {{ padding: 1rem 1.1rem 0; }}
 header {{ display: flex; flex-wrap: wrap; gap: 0.6rem 1rem; align-items: center; justify-content: space-between; }}
 h1 {{ font-size: 1.35rem; font-weight: 600; margin: 0; }}
@@ -58,19 +62,34 @@ h2 {{ font-size: 1rem; font-weight: 600; margin: 0 0 0.6rem; }}
 .down {{ color: #ff6b6b; }}
 section {{ margin: 1rem 0 1.4rem; }}
 .scroll {{ overflow-x: auto; }}
-table {{ border-collapse: collapse; width: 100%; min-width: 36rem; }}
-th, td {{ border-bottom: 1px solid #2a3140; text-align: right; padding: 0.4rem 0.45rem; font-size: 0.92rem; }}
-th:first-child, td:first-child {{ text-align: left; }}
-.calendar {{ display: flex; flex-wrap: wrap; gap: 0.4rem; }}
-.day {{ background: #171b22; border-radius: 0.4rem; min-width: 6.5rem; padding: 0.45rem 0.55rem; }}
-.day span, .day strong {{ display: block; }}
+table {{ border-collapse: collapse; width: 100%; }}
+th, td {{ border-bottom: 1px solid #2a3140; padding: 0.45rem 0.5rem; font-size: 0.92rem; }}
+th.num, td.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+.legend {{ display: flex; gap: 1rem; flex-wrap: wrap; list-style: none; padding: 0; color: #9aa3b2; font-size: 0.85rem; }}
+.swatch {{ display: inline-block; width: 0.7rem; height: 0.7rem; margin-right: 0.35rem;
+  border-radius: 2px; vertical-align: middle; }}
+.swatch.up {{ background: #3dd68c; }}
+.swatch.down {{ background: #ff6b6b; }}
+.swatch.off {{ background: #3a4150; }}
+.month {{ margin: 0.4rem 0 1rem; }}
+.weekdays, .grid {{ display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 0.25rem; }}
+.weekdays {{ color: #9aa3b2; font-size: 0.75rem; margin-bottom: 0.25rem; }}
+.cell {{ background: #171b22; border-radius: 0.35rem; min-height: 3.1rem; padding: 0.28rem 0.35rem; }}
+.cell .d {{ display: block; color: #9aa3b2; font-size: 0.72rem; }}
+.cell .v {{ display: block; font-size: 0.78rem; }}
+.cell.off {{ color: #6d7585; }}
+.cell.empty {{ background: transparent; }}
 .chart {{ width: 100%; height: 8rem; background: #171b22; border-radius: 0.4rem; }}
 pre {{ white-space: pre-wrap; word-break: break-word; background: #12161c; padding: 0.6rem; border-radius: 0.4rem; }}
 details {{ margin-top: 0.4rem; }}
 @media (max-width: 720px) {{
   .cards {{ grid-template-columns: 1fr 1fr; }}
   header {{ align-items: flex-start; }}
-  table {{ min-width: 28rem; }}
+  .scroll table, .scroll tbody, .scroll tr, .scroll td {{ display: block; width: 100%; min-width: 0; }}
+  .scroll thead {{ display: none; }}
+  .scroll tr {{ background: #171b22; border-radius: 0.45rem; margin: 0 0 0.55rem; padding: 0.35rem 0.65rem; }}
+  .scroll td {{ display: flex; justify-content: space-between; gap: 0.75rem; border: 0; text-align: right; padding: 0.28rem 0; }}
+  .scroll td::before {{ content: attr(data-label); color: #9aa3b2; text-align: left; }}
 }}
 </style>
 </head>
@@ -306,61 +325,8 @@ def _inconsistencies(
     latest: Mapping[str, object],
     start: Decimal | None,
 ) -> str:
-    notes: list[str] = []
-    nav = _decimal(latest.get("nav_gbp"))
-    stored = _decimal(latest.get("cumulative_return"))
-    implied = _implied_return(start, nav)
-    if stored is not None and implied is not None and abs(stored - implied) > Decimal("0.0000001"):
-        notes.append(
-            f"Verified log cumulative return {_pct(stored)} does not match NAV against starting capital ({_pct(implied)})."
-        )
-    previous = start
-    high = start
-    worst = Decimal(0)
-    for record in records:
-        if record.get("record_type") != "valuation":
-            continue
-        session = str(record.get("session"))
-        row_nav = _decimal(record.get("nav_gbp"))
-        daily = _decimal(record.get("daily_pnl_gbp"))
-        gap = None if row_nav is None or previous is None or daily is None else (row_nav - previous) - daily
-        if gap is not None and abs(gap) > Decimal("0.02"):
-            notes.append(f"Day P&L on {session} does not match the change in NAV.")
-        marked = _marked_value(record)
-        if row_nav is not None and marked is not None and abs(marked - row_nav) > Decimal("0.05"):
-            notes.append(f"Cash plus marked holdings on {session} does not match NAV.")
-        water = _decimal(record.get("high_water_gbp"))
-        drawdown = _decimal(record.get("drawdown"))
-        if water is not None and row_nav is not None and drawdown is not None and water > 0:
-            current = (water - row_nav) / water if row_nav < water else Decimal(0)
-            if drawdown + Decimal("0.0000001") < current:
-                notes.append(f"Drawdown on {session} is below the decline from the recorded high water.")
-            if high is not None and water + Decimal("0.01") < high:
-                notes.append(f"High water on {session} fell.")
-            if worst is not None and drawdown + Decimal("0.0000001") < worst:
-                notes.append(f"Drawdown on {session} fell below the earlier maximum.")
-            high = water
-            worst = drawdown
-        if row_nav is not None:
-            previous = row_nav
-    return "".join(f'<p class="warn">{_esc(note)}</p>' for note in notes)
-
-
-def _marked_value(record: Mapping[str, object]) -> Decimal | None:
-    cash = _decimal(record.get("cash_gbp"))
-    holdings = record.get("holdings")
-    prices = record.get("prices")
-    if cash is None or not isinstance(holdings, dict) or not isinstance(prices, dict):
-        return None
-    total = cash
-    for name, units in holdings.items():
-        info = prices.get(name)
-        price = _decimal(info.get("price_gbp")) if isinstance(info, dict) else None
-        quantity = _decimal(units)
-        if price is None or quantity is None:
-            return None
-        total += quantity * price
-    return total
+    del latest, start
+    return "".join(f'<p class="warn">{_esc(note)}</p>' for note in ledger_warnings(records))
 
 
 def _price_notes(latest: Mapping[str, object]) -> str:
@@ -380,18 +346,48 @@ def _price_notes(latest: Mapping[str, object]) -> str:
 
 
 def _calendar(records: Sequence[Mapping[str, object]]) -> str:
-    rows = [record for record in records if record.get("record_type") == "valuation"]
+    rows = [record for record in records if record.get("record_type") == "valuation" and isinstance(record.get("session"), str)]
     if not rows:
         return "<p>No verified marks yet.</p>"
-    cells = []
-    for record in rows:
+    by_day = {date.fromisoformat(str(record["session"])): record for record in rows}
+    first, last = min(by_day), max(by_day)
+    legend = (
+        '<ul class="legend"><li><i class="swatch up"></i>Gain</li>'
+        '<li><i class="swatch down"></i>Loss</li><li><i class="swatch off"></i>No session</li></ul>'
+    )
+    months: list[str] = []
+    cursor = date(first.year, first.month, 1)
+    while cursor <= last:
+        months.append(_month(cursor.year, cursor.month, by_day))
+        cursor = date(cursor.year + 1, 1, 1) if cursor.month == 12 else date(cursor.year, cursor.month + 1, 1)
+    return legend + "".join(months)
+
+
+def _month(year: int, month: int, by_day: dict[date, Mapping[str, object]]) -> str:
+    names = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+    head = "".join(f"<span>{name}</span>" for name in names)
+    cells: list[str] = []
+    for week in calendar.Calendar(firstweekday=0).monthdayscalendar(year, month):
+        for day in week:
+            cells.append(_day_cell(year, month, day, by_day))
+    title = date(year, month, 1).strftime("%B %Y")
+    grid = "".join(cells)
+    return f'<div class="month"><h3>{_esc(title)}</h3><div class="weekdays">{head}</div><div class="grid">{grid}</div></div>'
+
+
+def _day_cell(year: int, month: int, day: int, by_day: dict[date, Mapping[str, object]]) -> str:
+    if day == 0:
+        return '<span class="cell empty"></span>'
+    current = date(year, month, day)
+    record = by_day.get(current)
+    if record is not None:
         amount = _decimal(record.get("daily_pnl_gbp"))
         tone = "up" if amount is not None and amount > 0 else "down" if amount is not None and amount < 0 else ""
-        cells.append(
-            f'<div class="day"><span>{_esc(record.get("session"))}</span>'
-            f'<strong class="{tone}">{_esc(_signed(record.get("daily_pnl_gbp")))}</strong></div>'
-        )
-    return "".join(cells)
+        value = _esc(_signed(record.get("daily_pnl_gbp")))
+        return f'<span class="cell {tone}"><span class="d">{day}</span><span class="v">{value}</span></span>'
+    if session_open(current) is None:
+        return f'<span class="cell off"><span class="d">{day}</span><span class="v">No session</span></span>'
+    return f'<span class="cell"><span class="d">{day}</span><span class="v">No mark</span></span>'
 
 
 def _chart(records: Sequence[Mapping[str, object]]) -> str:
@@ -429,8 +425,12 @@ def _holdings(latest: Mapping[str, object]) -> str:
         weight = f" ({_pct(value / nav)})" if value is not None and nav not in (None, 0) else ""
         rows.append(
             "<tr>"
-            f"<td>{_esc(name)}</td><td>{_esc(held.get(name))}</td><td>{_esc(_gbp(price))}</td>"
-            f"<td>{_esc(_money(value))}{_esc(weight)}</td><td>{_esc(status)}</td></tr>"
+            + _td("Fund", _esc(name), text=True)
+            + _td("Units", _esc(held.get(name)))
+            + _td("Price", _esc(_gbp(price)))
+            + _td("Value", _esc(_gbp(value)) + _esc(weight))
+            + _td("Status", _esc(status), text=True)
+            + "</tr>"
         )
     return "".join(rows)
 
@@ -459,14 +459,14 @@ def _fills(records: Sequence[Mapping[str, object]]) -> str:
     for record in rows:
         body.append(
             "<tr>"
-            f"<td>{_esc(_london(str(record.get('timestamp_utc') or '')))}</td>"
-            f"<td>{_esc(record.get('session'))}</td>"
-            f"<td>{_esc(record.get('side'))}</td>"
-            f"<td>{_esc(record.get('fund'))}</td>"
-            f"<td>{_esc(record.get('units'))}</td>"
-            f"<td>{_esc(_gbp(record.get('price_gbp')))}</td>"
-            f"<td>{_esc(_gbp(record.get('cash_delta_gbp')))}</td>"
-            "</tr>"
+            + _td("Recorded", _esc(_london(str(record.get("timestamp_utc") or ""))), text=True)
+            + _td("Session", _esc(record.get("session")), text=True)
+            + _td("Side", _esc(record.get("side")), text=True)
+            + _td("Fund", _esc(record.get("fund")), text=True)
+            + _td("Units", _esc(record.get("units")))
+            + _td("Price", _esc(_gbp(record.get("price_gbp"))))
+            + _td("Cash", _esc(_gbp(record.get("cash_delta_gbp"))))
+            + "</tr>"
         )
     return "".join(body)
 
@@ -513,13 +513,13 @@ def _benchmarks(performance: Mapping[str, object]) -> str:
     for arm in arms:
         rows.append(
             "<tr>"
-            f"<td>{_esc(arm.get('name'))}</td>"
-            f"<td>{_esc(_gbp(arm.get('end_nav_gbp')))}</td>"
-            f"<td>{_esc(_pct(arm.get('cumulative_return')))}</td>"
-            f"<td>{_esc(_pct(arm.get('max_drawdown')))}</td>"
-            f"<td>{_esc(arm.get('trades'))}</td>"
-            f"<td>{_esc(_gbp(arm.get('costs_gbp')))}</td>"
-            "</tr>"
+            + _td("Book", _esc(arm.get("name")), text=True)
+            + _td("End value", _esc(_gbp(arm.get("end_nav_gbp"))))
+            + _td("Return", _esc(_pct(arm.get("cumulative_return"))))
+            + _td("Max drawdown", _esc(_pct(arm.get("max_drawdown"))))
+            + _td("Trades", _esc(arm.get("trades")))
+            + _td("Costs", _esc(_gbp(arm.get("costs_gbp"))))
+            + "</tr>"
         )
     return "".join(rows)
 
@@ -591,6 +591,11 @@ def _actions(value: object) -> str:
     if not isinstance(value, dict) or not value:
         return "—"
     return ", ".join(f"{name} {side}" for name, side in sorted(value.items()))
+
+
+def _td(label: str, value: str, *, text: bool = False) -> str:
+    kind = "" if text else ' class="num"'
+    return f'<td data-label="{_esc(label)}"{kind}>{value}</td>'
 
 
 def _targets(record: Mapping[str, object]) -> dict[str, Mapping[str, object]]:
