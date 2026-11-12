@@ -11,6 +11,7 @@ does not replace ``--out``.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -26,7 +27,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lane", choices=("mock", "genuine"), default="mock")
     parser.add_argument("--evidence-sha", default="")
     parser.add_argument("--fetched", choices=("fresh", "stale"), default="")
+    parser.add_argument("--mark-kept", action="store_true")
     args = parser.parse_args(argv)
+    if args.mark_kept:
+        mark_kept(args.out)
+        return 1
     return import_verified(
         args.log,
         args.out,
@@ -55,11 +60,13 @@ def import_verified(
         _require_lane(records, lane)
     except (OSError, ResearchError) as exc:
         _failed(str(exc))
+        mark_kept(destination)
         return 1
     last = _last_valuation(records)
     note = _freshness(fetched, evidence_sha, str(last.get("session") or ""))
     if write_dashboard(log_path, destination, evidence_note=note) != 0:
         _failed("paper-v2 verifier rejected the log")
+        mark_kept(destination)
         return 1
     print(f"evidence_sha={evidence_sha}")
     print(f"records={len(records)}")
@@ -91,6 +98,26 @@ def _freshness(fetched: str, evidence_sha: str, session: str) -> str:
     if fetched == "fresh":
         return f"Fetched origin/evidence {evidence_sha} this run. Last valuation {session}."
     return ""
+
+
+def mark_kept(destination: Path) -> None:
+    """Say the previous page was kept. The figures already in the file stay."""
+    if not destination.is_file():
+        return
+    text = destination.read_text(encoding="utf-8")
+    if 'id="evidence-fetch"' not in text:
+        return
+    banner = (
+        '<p id="evidence-fetch" class="warn">'
+        "CHECK FAILED. The previous verified page was kept and was not replaced. "
+        "It is not a new fetch.</p>"
+    )
+    updated = re.sub(r'<p id="evidence-fetch"[^>]*>.*?</p>', banner, text, count=1, flags=re.DOTALL)
+    if updated == text:
+        return
+    from sterling.research.invest.report import _publish_text
+
+    _publish_text(destination, updated)
 
 
 def _failed(reason: str) -> None:

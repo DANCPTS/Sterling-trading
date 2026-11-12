@@ -286,8 +286,8 @@ def _accrued_interest(records: Sequence[Mapping[str, object]]) -> Decimal | None
 def _note_line(note: str) -> str:
     if not note:
         return ""
-    kind = "warn" if note.startswith("OFFLINE") else "banner"
-    return f'<p class="{kind}">{_esc(note)}</p>'
+    kind = "warn" if note.startswith(("OFFLINE", "CHECK FAILED")) else "banner"
+    return f'<p id="evidence-fetch" class="{kind}">{_esc(note)}</p>'
 
 
 def _source_banner(label: str) -> str:

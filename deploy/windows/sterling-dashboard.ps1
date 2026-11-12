@@ -15,13 +15,13 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 . (Join-Path $PSScriptRoot "sterling-python.ps1")
 
-$ExpectedOrigin = "https://github.com/dancpts/sterling-forward-evidence.git"
-
 function Test-EvidenceOrigin {
     param([string]$Url)
-    $text = $Url.Trim().TrimEnd("/")
-    if (-not $text.ToLowerInvariant().EndsWith(".git")) { $text = $text + ".git" }
-    return $text.ToLowerInvariant() -eq $ExpectedOrigin
+    $text = $Url.Trim().TrimEnd("/").ToLowerInvariant()
+    if ($text.EndsWith(".git")) { $text = $text.Substring(0, $text.Length - 4) }
+    $https = "https://github.com/dancpts/sterling-forward-evidence"
+    $ssh = "git@github.com:dancpts/sterling-forward-evidence"
+    return ($text -eq $https) -or ($text -eq $ssh)
 }
 
 if ([string]::IsNullOrWhiteSpace($AppRoot)) {
@@ -54,7 +54,7 @@ if (-not (Test-Path -LiteralPath $EvidenceRoot)) {
 
 $origin = (& git -C $EvidenceRoot config --local --get remote.origin.url).Trim()
 if ($LASTEXITCODE -ne 0 -or -not (Test-EvidenceOrigin $origin)) {
-    if ($origin -match '@' -or $origin -match 'token') {
+    if ($origin -match 'token' -or $origin -match 'ghp_' -or $origin -match '://[^/]*@') {
         Write-Host "origin is not the private evidence repository. Refusing to read this clone."
     } else {
         Write-Host "origin is '$origin'."
@@ -104,7 +104,8 @@ try {
         "show", "origin/evidence:$relative"
     ) -RedirectStandardOutput $extracted -NoNewWindow -Wait -PassThru
     if ($show.ExitCode -ne 0) {
-        Write-Host "Could not read $relative from origin/evidence. The dashboard was not replaced."
+        Write-Host "CHECK FAILED. Could not read $relative from origin/evidence. The previous page was kept."
+        & $python -m sterling.research.invest.import_dashboard --mark-kept --out $dashboard
         if ((Test-Path -LiteralPath $dashboard) -and -not $NoBrowser) { Start-Process -FilePath $dashboard }
         exit 1
     }

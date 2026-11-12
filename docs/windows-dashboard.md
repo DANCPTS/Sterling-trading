@@ -24,7 +24,7 @@ The private clone must already be at `C:\Users\danie\sterling-forward-evidence`,
 
 Double-click `deploy\windows\Sterling-Dashboard.cmd`.
 
-It checks that `origin` is `https://github.com/DANCPTS/sterling-forward-evidence.git`. The clone may stay on `update/paper-v2-runner`. The script does not switch branches. It fetches only `refs/heads/evidence` into `origin/evidence`, then reads `evidence/invest-v2/mock/forward.jsonl` with `git show` into a temporary file that is deleted before the window closes.
+It checks that the configured `origin` is the private evidence repo, either `https://github.com/DANCPTS/sterling-forward-evidence` or `git@github.com:DANCPTS/sterling-forward-evidence`, with or without `.git`. The clone may stay on `update/paper-v2-runner`. The script does not switch branches. It fetches only `refs/heads/evidence` into `origin/evidence`, then reads `evidence/invest-v2/mock/forward.jsonl` with `git show` into a temporary file that is deleted before the window closes. If that evidence ref is missing, it stops.
 
 The page is written to `C:\Users\danie\AppData\Local\SterlingTrading\dashboard.html`, outside both git repos, and only after the new file is complete. The clone's branch and working tree are left as they were. The page then opens in the default browser. No server is started.
 

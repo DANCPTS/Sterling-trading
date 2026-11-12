@@ -35,7 +35,7 @@ def test_mock_import_flags_the_old_baseline_and_keeps_the_last_page(tmp_path: Pa
     _old_baseline_log(log)
     page = tmp_path / "dashboard.html"
     page.write_text("previous", encoding="utf-8")
-    assert import_verified(log, page, lane="mock", evidence_sha="abc123") == 0
+    assert import_verified(log, page, lane="mock", evidence_sha="abc123", fetched="fresh") == 0
     html = page.read_text(encoding="utf-8")
     assert "MOCK / PAPER" in html
     assert "GENUINE PAPER" not in html
@@ -48,11 +48,16 @@ def test_mock_import_flags_the_old_baseline_and_keeps_the_last_page(tmp_path: Pa
     broken = tmp_path / "broken.jsonl"
     broken.write_text(log.read_text(encoding="utf-8").replace("paper-v2", "paper-v9", 1), encoding="utf-8")
     assert import_verified(broken, page, lane="mock", evidence_sha="abc123") == 1
-    assert page.read_text(encoding="utf-8") == html
+    kept = page.read_text(encoding="utf-8")
+    assert "CHECK FAILED" in kept
+    assert "Fetched origin/evidence" not in kept
+    assert "2.00%" in kept
+    assert "MOCK / PAPER" in kept
     forward = tmp_path / "forward.jsonl"
     _old_baseline_log(forward, lane="forward")
     assert import_verified(forward, page, lane="mock", evidence_sha="abc123") == 1
-    assert page.read_text(encoding="utf-8") == html
+    assert "CHECK FAILED" in page.read_text(encoding="utf-8")
+    assert "2.00%" in page.read_text(encoding="utf-8")
 
 
 def test_launcher_syntax_and_fixture_repo(tmp_path: Path, stamped: None) -> None:
@@ -72,6 +77,10 @@ def test_launcher_syntax_and_fixture_repo(tmp_path: Path, stamped: None) -> None
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "verified=OK" in completed.stdout
     assert "Fetched origin/evidence this run." in completed.stdout
+    ssh = _launch_with_origin(pwsh, clone, env, "git@github.com:DANCPTS/sterling-forward-evidence.git", remote)
+    assert ssh.returncode == 0, ssh.stdout + ssh.stderr
+    assert "Fetched origin/evidence this run." in ssh.stdout
+    assert _branch(clone, env) == "update/paper-v2-runner"
     assert "records=" in completed.stdout
     page = local / "SterlingTrading" / "dashboard.html"
     fresh = page.read_text(encoding="utf-8")
@@ -221,6 +230,18 @@ def _evidence_repo(tmp_path: Path) -> tuple[Path, Path]:
     _git(clone, "remote", "set-url", "origin", _ORIGIN, env=env)
     _git(clone, "config", f"url.{remote}/.insteadOf", _ORIGIN, env=env)
     return remote, clone
+
+
+def _launch_with_origin(
+    pwsh: str,
+    clone: Path,
+    env: dict[str, str],
+    origin: str,
+    remote: Path,
+) -> subprocess.CompletedProcess[str]:
+    _git(clone, "remote", "set-url", "origin", origin, env=env)
+    _git(clone, "config", f"url.{remote}/.insteadOf", origin, env=env)
+    return _launch(pwsh, clone, env)
 
 
 def _launch(pwsh: str, clone: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
