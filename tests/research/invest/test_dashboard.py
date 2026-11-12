@@ -100,6 +100,72 @@ def test_pending_interest_is_not_zero_and_orders_expire(tmp_path: Path, stamped:
     assert "9,955.14" not in html
 
 
+def test_synthetic_page_is_not_labelled_as_yahoo(tmp_path: Path, stamped: None) -> None:
+    del stamped
+    log = tmp_path / "synthetic.jsonl"
+    build_synthetic_log(log)
+    page = tmp_path / "dashboard.html"
+    assert write_dashboard(log, page) == 0
+    html = page.read_text(encoding="utf-8")
+    assert "SYNTHETIC fixture" in html
+    assert "Yahoo only" not in html
+    assert "£10,000.00" in html
+    assert "does not match" not in html
+
+
+def test_decision_is_pending_before_a_skip() -> None:
+    html = render_dashboard(
+        (
+            {
+                "record_type": "decision",
+                "evidence_lane": "mock",
+                "system": "sterling-invest",
+                "gate": "accepted",
+                "timestamp_utc": "2026-11-11T18:00:00+00:00",
+                "cash_gbp": "10000.00",
+                "derived_actions": {"VWRP": "BUY", "IGLT": "HOLD"},
+            },
+        )
+    )
+    assert "Pending VWRP: decision BUY, not yet filled" in html
+    assert "Pending IGLT" not in html
+    assert "No pending order" not in html
+
+
+def test_mismatched_return_is_shown_not_hidden() -> None:
+    html = render_dashboard(
+        (
+            {
+                "record_type": "decision",
+                "evidence_lane": "mock",
+                "system": "sterling-invest",
+                "gate": "accepted",
+                "timestamp_utc": "2026-11-11T18:00:00+00:00",
+                "cash_gbp": "10000.00",
+                "derived_actions": {},
+            },
+            {
+                "record_type": "valuation",
+                "session": "2026-11-12",
+                "timestamp_utc": "2026-11-12T16:30:00+00:00",
+                "nav_gbp": "10349.69",
+                "cash_gbp": "10349.69",
+                "daily_pnl_gbp": "349.69",
+                "cumulative_return": "0.0283",
+                "drawdown": "0",
+                "high_water_gbp": "10349.69",
+                "holdings": {},
+                "prices": {},
+                "data_label": "SYNTHETIC",
+            },
+        )
+    )
+    assert "does not match NAV against starting capital" in html
+    assert "3.50%" in html
+    assert "2.83%" in html
+    assert "Yahoo only" not in html
+
+
 def test_renderer_escapes_a_reason() -> None:
     html = render_dashboard(
         (

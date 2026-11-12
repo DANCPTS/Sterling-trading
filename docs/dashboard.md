@@ -35,7 +35,7 @@ The genuine lane is `evidence/invest-v2/forward.jsonl`. The page badge follows t
 
 ## What the page will and will not show
 
-It shows recorded NAV, day and cumulative P&L, cash, costs, drawdown, holdings, decisions, fills, pending orders, and EXPIRED orders. Realised P&L is shown only when a sell fill is in the ledger. Unrealised P&L is shown only when the verified closes and the fill costs support it. SONIA days that are still `interest_pending` are labelled pending and are not shown as zero. Prices are labelled `Yahoo only / not exchange verified`. Sterling FX is named and has no figures.
+It shows recorded NAV, day and cumulative P&L, cash, costs, drawdown, holdings, decisions, fills, pending orders, and EXPIRED orders. Realised P&L is shown only when a sell fill is in the ledger. Unrealised P&L is shown only when the verified closes and the fill costs support it. SONIA days that are still `interest_pending` are labelled pending and are not shown as zero. A live Yahoo book is labelled `Yahoo only / not exchange verified`. A SYNTHETIC book is not described as Yahoo. Sterling FX is named and has no figures.
 
 Grok text is the stored prompt, the stored reply, and the stored reasons. A mock log is labelled MOCK. If the log has no reply, the page says `No AI explanation recorded`.
 

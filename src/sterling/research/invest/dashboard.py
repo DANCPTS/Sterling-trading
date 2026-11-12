@@ -88,19 +88,20 @@ details {{ margin-top: 0.4rem; }}
 <span class="product off">Sterling FX: not built yet</span>
 </div>
 <p class="banner">DATA LABEL: {_esc(label)}. Read only. This page cannot place an order.</p>
-<p class="warn">{_esc(_YAHOO)}</p>
+<p class="warn">{_esc(_source_banner(label))}</p>
 {_warnings(latest, pending_interest)}
+{_inconsistencies(records, latest, start)}
 <section>
 <h2>Portfolio</h2>
 <div class="cards">
-{_card("Starting capital", _money(start) if start is not None else "—")}
-{_card("NAV", _money(nav))}
+{_card("Starting capital", _gbp(start) if start is not None else "—")}
+{_card("NAV", _gbp(nav))}
 {_card("Day P&L", _signed(latest.get("daily_pnl_gbp")))}
 {_card("Cumulative P&L", _signed(cumulative))}
-{_card("Cash", _money(latest.get("cash_gbp")))}
-{_card("Cumulative costs", _money(latest.get("cumulative_costs_gbp")))}
+{_card("Cash", _gbp(latest.get("cash_gbp")))}
+{_card("Cumulative costs", _gbp(latest.get("cumulative_costs_gbp")))}
 {_card("Drawdown", _pct(latest.get("drawdown")))}
-{_card("Cumulative return", _pct(latest.get("cumulative_return")))}
+{_card("Cumulative return", _pct(_shown_return(latest, start, nav)))}
 </div>
 <p>{_pnl_line(realised, sells, unrealised, accrued, pending_interest)}</p>
 </section>
@@ -262,13 +263,34 @@ def _accrued_interest(records: Sequence[Mapping[str, object]]) -> Decimal | None
     return sum(numbers, Decimal(0))
 
 
+def _source_banner(label: str) -> str:
+    if "SYNTHETIC" in label.upper():
+        return "SYNTHETIC fixture. Not a market print."
+    return _YAHOO
+
+
+def _shown_return(latest: Mapping[str, object], start: Decimal | None, nav: object) -> object:
+    stored = _decimal(latest.get("cumulative_return"))
+    implied = _implied_return(start, nav)
+    if stored is None or implied is None or abs(stored - implied) > Decimal("0.0000001"):
+        return implied if implied is not None else latest.get("cumulative_return")
+    return stored
+
+
+def _implied_return(start: Decimal | None, nav: object) -> Decimal | None:
+    latest = _decimal(nav)
+    if start is None or start <= 0 or latest is None:
+        return None
+    return latest / start - 1
+
+
 def _warnings(latest: Mapping[str, object], pending_interest: list[str]) -> str:
     notes = [_price_notes(latest)]
+    rate = latest.get("cash_rate")
     if pending_interest:
         days = ", ".join(pending_interest)
         notes.append(f'<p class="warn">SONIA interest pending for {_esc(days)}. Not accrued and not zero.</p>')
-    rate = latest.get("cash_rate")
-    if isinstance(rate, dict) and rate.get("status") == "unavailable":
+    elif isinstance(rate, dict) and rate.get("status") == "unavailable":
         notes.append(f'<p class="warn">SONIA print unavailable ({_esc(rate.get("reason"))}). Not accrued and not zero.</p>')
     elif isinstance(rate, dict) and rate.get("status") == "accrued":
         notes.append(
@@ -277,6 +299,68 @@ def _warnings(latest: Mapping[str, object], pending_interest: list[str]) -> str:
             f"available {_esc(rate.get('available_at'))}.</p>"
         )
     return "\n".join(note for note in notes if note)
+
+
+def _inconsistencies(
+    records: Sequence[Mapping[str, object]],
+    latest: Mapping[str, object],
+    start: Decimal | None,
+) -> str:
+    notes: list[str] = []
+    nav = _decimal(latest.get("nav_gbp"))
+    stored = _decimal(latest.get("cumulative_return"))
+    implied = _implied_return(start, nav)
+    if stored is not None and implied is not None and abs(stored - implied) > Decimal("0.0000001"):
+        notes.append(
+            f"Verified log cumulative return {_pct(stored)} does not match NAV against starting capital ({_pct(implied)})."
+        )
+    previous = start
+    high = start
+    worst = Decimal(0)
+    for record in records:
+        if record.get("record_type") != "valuation":
+            continue
+        session = str(record.get("session"))
+        row_nav = _decimal(record.get("nav_gbp"))
+        daily = _decimal(record.get("daily_pnl_gbp"))
+        gap = None if row_nav is None or previous is None or daily is None else (row_nav - previous) - daily
+        if gap is not None and abs(gap) > Decimal("0.02"):
+            notes.append(f"Day P&L on {session} does not match the change in NAV.")
+        marked = _marked_value(record)
+        if row_nav is not None and marked is not None and abs(marked - row_nav) > Decimal("0.05"):
+            notes.append(f"Cash plus marked holdings on {session} does not match NAV.")
+        water = _decimal(record.get("high_water_gbp"))
+        drawdown = _decimal(record.get("drawdown"))
+        if water is not None and row_nav is not None and drawdown is not None and water > 0:
+            current = (water - row_nav) / water if row_nav < water else Decimal(0)
+            if drawdown + Decimal("0.0000001") < current:
+                notes.append(f"Drawdown on {session} is below the decline from the recorded high water.")
+            if high is not None and water + Decimal("0.01") < high:
+                notes.append(f"High water on {session} fell.")
+            if worst is not None and drawdown + Decimal("0.0000001") < worst:
+                notes.append(f"Drawdown on {session} fell below the earlier maximum.")
+            high = water
+            worst = drawdown
+        if row_nav is not None:
+            previous = row_nav
+    return "".join(f'<p class="warn">{_esc(note)}</p>' for note in notes)
+
+
+def _marked_value(record: Mapping[str, object]) -> Decimal | None:
+    cash = _decimal(record.get("cash_gbp"))
+    holdings = record.get("holdings")
+    prices = record.get("prices")
+    if cash is None or not isinstance(holdings, dict) or not isinstance(prices, dict):
+        return None
+    total = cash
+    for name, units in holdings.items():
+        info = prices.get(name)
+        price = _decimal(info.get("price_gbp")) if isinstance(info, dict) else None
+        quantity = _decimal(units)
+        if price is None or quantity is None:
+            return None
+        total += quantity * price
+    return total
 
 
 def _price_notes(latest: Mapping[str, object]) -> str:
@@ -345,7 +429,7 @@ def _holdings(latest: Mapping[str, object]) -> str:
         weight = f" ({_pct(value / nav)})" if value is not None and nav not in (None, 0) else ""
         rows.append(
             "<tr>"
-            f"<td>{_esc(name)}</td><td>{_esc(held.get(name))}</td><td>{_esc(_money(price))}</td>"
+            f"<td>{_esc(name)}</td><td>{_esc(held.get(name))}</td><td>{_esc(_gbp(price))}</td>"
             f"<td>{_esc(_money(value))}{_esc(weight)}</td><td>{_esc(status)}</td></tr>"
         )
     return "".join(rows)
@@ -380,8 +464,8 @@ def _fills(records: Sequence[Mapping[str, object]]) -> str:
             f"<td>{_esc(record.get('side'))}</td>"
             f"<td>{_esc(record.get('fund'))}</td>"
             f"<td>{_esc(record.get('units'))}</td>"
-            f"<td>{_esc(_money(record.get('price_gbp')))}</td>"
-            f"<td>{_esc(_money(record.get('cash_delta_gbp')))}</td>"
+            f"<td>{_esc(_gbp(record.get('price_gbp')))}</td>"
+            f"<td>{_esc(_gbp(record.get('cash_delta_gbp')))}</td>"
             "</tr>"
         )
     return "".join(body)
@@ -392,7 +476,7 @@ def _orders(records: Sequence[Mapping[str, object]]) -> str:
     expired: list[Mapping[str, object]] = []
     for record in records:
         if record.get("record_type") == "decision" and record.get("gate") == "accepted":
-            pending = {}
+            pending = _targets(record)
         elif record.get("record_type") == "fill":
             pending.pop(str(record.get("fund")), None)
         elif record.get("record_type") == "fill_skipped" and record.get("reason") == "EXPIRED":
@@ -402,7 +486,9 @@ def _orders(records: Sequence[Mapping[str, object]]) -> str:
             "opening_price_unavailable",
             "valuation_incomplete",
         }:
-            pending[str(record.get("fund"))] = record
+            fund = str(record.get("fund"))
+            if fund in pending:
+                pending[fund] = record
     lines = []
     if not pending:
         lines.append("<p>No pending order.</p>")
@@ -428,11 +514,11 @@ def _benchmarks(performance: Mapping[str, object]) -> str:
         rows.append(
             "<tr>"
             f"<td>{_esc(arm.get('name'))}</td>"
-            f"<td>{_esc(_money(arm.get('end_nav_gbp')))}</td>"
+            f"<td>{_esc(_gbp(arm.get('end_nav_gbp')))}</td>"
             f"<td>{_esc(_pct(arm.get('cumulative_return')))}</td>"
             f"<td>{_esc(_pct(arm.get('max_drawdown')))}</td>"
             f"<td>{_esc(arm.get('trades'))}</td>"
-            f"<td>{_esc(_money(arm.get('costs_gbp')))}</td>"
+            f"<td>{_esc(_gbp(arm.get('costs_gbp')))}</td>"
             "</tr>"
         )
     return "".join(rows)
@@ -507,16 +593,41 @@ def _actions(value: object) -> str:
     return ", ".join(f"{name} {side}" for name, side in sorted(value.items()))
 
 
+def _targets(record: Mapping[str, object]) -> dict[str, Mapping[str, object]]:
+    actions = record.get("derived_actions")
+    if not isinstance(actions, dict):
+        return {}
+    pending: dict[str, Mapping[str, object]] = {}
+    for fund, action in actions.items():
+        if str(action) not in {"BUY", "SELL"}:
+            continue
+        pending[str(fund)] = {
+            "fund": fund,
+            "reason": f"decision {action}, not yet filled",
+            "session": record.get("timestamp_utc") or "",
+        }
+    return pending
+
+
+def _gbp(value: object) -> str:
+    text = _money(value)
+    if not text:
+        return "—"
+    if text.startswith("-"):
+        return f"-£{text[1:]}"
+    return f"£{text}"
+
+
 def _signed(value: object) -> str:
     amount = _decimal(value)
     if amount is None:
         return "—"
-    text = _money(abs(amount))
+    body = _gbp(abs(amount))
     if amount > 0:
-        return f"+{text}"
+        return f"+{body}"
     if amount < 0:
-        return f"-{text}"
-    return text
+        return f"-{body}"
+    return body
 
 
 def _london(value: str) -> str:
