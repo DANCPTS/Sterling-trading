@@ -17,7 +17,7 @@ LONDON = ZoneInfo("Europe/London")
 _YAHOO = "Yahoo only / not exchange verified"
 
 
-def render_dashboard(records: Sequence[Mapping[str, object]]) -> str:
+def render_dashboard(records: Sequence[Mapping[str, object]], *, evidence_note: str = "") -> str:
     """One static page. Logged strings are escaped. No order controls."""
     lane = _lane(records)
     latest = _last(records, "valuation")
@@ -107,6 +107,7 @@ details {{ margin-top: 0.4rem; }}
 <span class="product off">Sterling FX: not built yet</span>
 </div>
 <p class="banner">DATA LABEL: {_esc(label)}. Read only. This page cannot place an order.</p>
+{_note_line(evidence_note)}
 <p class="warn">{_esc(_source_banner(label))}</p>
 {_warnings(latest, pending_interest)}
 {_inconsistencies(records, latest, start)}
@@ -280,6 +281,13 @@ def _accrued_interest(records: Sequence[Mapping[str, object]]) -> Decimal | None
     if not numbers:
         return None
     return sum(numbers, Decimal(0))
+
+
+def _note_line(note: str) -> str:
+    if not note:
+        return ""
+    kind = "warn" if note.startswith("OFFLINE") else "banner"
+    return f'<p class="{kind}">{_esc(note)}</p>'
 
 
 def _source_banner(label: str) -> str:

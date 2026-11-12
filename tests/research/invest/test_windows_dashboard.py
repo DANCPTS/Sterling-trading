@@ -14,10 +14,12 @@ import pytest
 
 from sterling.research.fx.grok_forward import ProposalLog
 from sterling.research.invest.import_dashboard import import_verified
+from sterling.research.invest.report import write_dashboard
 from sterling.research.invest.schema import FUNDS
 
 ROOT = Path(__file__).resolve().parents[3]
 WHEN = datetime(2026, 11, 12, 16, 30, tzinfo=UTC)
+_ORIGIN = "https://github.com/DANCPTS/sterling-forward-evidence.git"
 
 
 @pytest.fixture
@@ -65,20 +67,62 @@ def test_launcher_syntax_and_fixture_repo(tmp_path: Path, stamped: None) -> None
     env = os.environ.copy()
     env["LOCALAPPDATA"] = str(local)
     env["PYTHONPATH"] = str(ROOT / "src")
+    before = set(Path("/tmp").glob("sterling-evidence-*.jsonl"))
     completed = _launch(pwsh, clone, env)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "verified=OK" in completed.stdout
+    assert "Fetched origin/evidence this run." in completed.stdout
     assert "records=" in completed.stdout
     page = local / "SterlingTrading" / "dashboard.html"
-    assert "MOCK / PAPER" in page.read_text(encoding="utf-8")
-    assert _branch(clone, env) == "main"
+    fresh = page.read_text(encoding="utf-8")
+    assert "MOCK / PAPER" in fresh
+    assert "Fetched origin/evidence" in fresh
+    assert "OFFLINE / STALE" not in fresh
+    assert _branch(clone, env) == "update/paper-v2-runner"
     assert _status(clone, env) == ""
-    subprocess.run(["git", "-C", str(clone), "remote", "set-url", "origin", str(tmp_path / "missing.git")], check=True, env=env)
-    del remote
+    assert not (local / "SterlingTrading" / "forward.jsonl").exists()
+    assert set(Path("/tmp").glob("sterling-evidence-*.jsonl")) <= before
+    _git(clone, "config", "--unset-all", f"url.{remote}/.insteadOf", env=env)
+    _git(clone, "config", f"url.{tmp_path / 'missing.git'}.insteadOf", _ORIGIN, env=env)
     offline = _launch(pwsh, clone, env)
     assert offline.returncode == 0, offline.stdout + offline.stderr
-    assert "Fetch failed" in offline.stdout
+    assert "OFFLINE / STALE" in offline.stdout
     assert "verified=OK" in offline.stdout
+    stale = page.read_text(encoding="utf-8")
+    assert "OFFLINE / STALE" in stale
+    assert "Do not treat it as a new fetch." in stale
+    assert _branch(clone, env) == "update/paper-v2-runner"
+    kept = stale
+    subprocess.run(
+        ["git", "-C", str(clone), "remote", "set-url", "origin", "https://github.com/DANCPTS/Sterling-trading.git"],
+        check=True,
+        env=env,
+    )
+    del remote
+    refused = _launch(pwsh, clone, env)
+    assert refused.returncode != 0, refused.stdout + refused.stderr
+    assert "Refusing to read this clone" in refused.stdout
+    assert page.read_text(encoding="utf-8") == kept
+    assert not list(local.rglob("*.jsonl"))
+
+
+def test_interrupted_write_keeps_the_page(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stamped: None) -> None:
+    del stamped
+    log = tmp_path / "mock.jsonl"
+    _old_baseline_log(log)
+    page = tmp_path / "dashboard.html"
+    page.write_text("kept", encoding="utf-8")
+    real_write = Path.write_text
+
+    def boom(self: Path, data: str, encoding: str | None = None, errors: str | None = None, newline: str | None = None) -> int:
+        if self.name.endswith(".tmp"):
+            raise OSError("disk")
+        return real_write(self, data, encoding=encoding, errors=errors, newline=newline)
+
+    monkeypatch.setattr(Path, "write_text", boom)
+    assert write_dashboard(log, page) == 1
+    assert page.read_text(encoding="utf-8") == "kept"
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 def _old_baseline_log(path: Path, *, lane: str = "mock") -> None:
@@ -169,10 +213,13 @@ def _evidence_repo(tmp_path: Path) -> tuple[Path, Path]:
     _git(source, "add", "evidence", env=env)
     _git(source, "commit", "-m", "mock evidence", env=env)
     _git(source, "checkout", "main", env=env)
+    _git(source, "checkout", "-b", "update/paper-v2-runner", env=env)
     remote = tmp_path / "remote.git"
     _git(source, "clone", "--bare", str(source), str(remote), env=env)
     clone = tmp_path / "clone"
     _git(source, "clone", str(remote), str(clone), env=env)
+    _git(clone, "remote", "set-url", "origin", _ORIGIN, env=env)
+    _git(clone, "config", f"url.{remote}/.insteadOf", _ORIGIN, env=env)
     return remote, clone
 
 

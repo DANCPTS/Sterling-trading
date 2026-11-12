@@ -24,13 +24,11 @@ The private clone must already be at `C:\Users\danie\sterling-forward-evidence`,
 
 Double-click `deploy\windows\Sterling-Dashboard.cmd`.
 
-It fetches `origin/evidence` with the Git login already on the PC, reads `evidence/invest-v2/mock/forward.jsonl` with `git show`, and writes:
+It checks that `origin` is `https://github.com/DANCPTS/sterling-forward-evidence.git`. The clone may stay on `update/paper-v2-runner`. The script does not switch branches. It fetches only `refs/heads/evidence` into `origin/evidence`, then reads `evidence/invest-v2/mock/forward.jsonl` with `git show` into a temporary file that is deleted before the window closes.
 
-`C:\Users\danie\AppData\Local\SterlingTrading\dashboard.html`
+The page is written to `C:\Users\danie\AppData\Local\SterlingTrading\dashboard.html`, outside both git repos, and only after the new file is complete. The clone's branch and working tree are left as they were. The page then opens in the default browser. No server is started.
 
-That file is outside both git repos. The clone's branch and working tree are left as they were. The page then opens in the default browser. No server is started.
-
-If the fetch fails, the last `origin/evidence` already on the PC is used, and the window says so. If the log does not verify, the previous page is kept, the window shows `verified=FAILED`, and that last good page opens when it exists. The command exits non-zero.
+A fresh fetch says `Fetched origin/evidence this run` in the window and on the page, with the evidence commit and the last valuation date. If the fetch fails, the window stays open and says `OFFLINE / STALE`, and the page says the same so an old copy is not presented as a new fetch. If the log does not verify, the previous page is kept, the window stays open, shows `verified=FAILED`, and opens that last good page when it exists. The command exits non-zero.
 
 The genuine log is not read unless you pass `-Lane genuine`.
 

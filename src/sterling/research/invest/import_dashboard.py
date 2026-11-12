@@ -25,11 +25,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--lane", choices=("mock", "genuine"), default="mock")
     parser.add_argument("--evidence-sha", default="")
+    parser.add_argument("--fetched", choices=("fresh", "stale"), default="")
     args = parser.parse_args(argv)
-    return import_verified(args.log, args.out, lane=args.lane, evidence_sha=args.evidence_sha)
+    return import_verified(
+        args.log,
+        args.out,
+        lane=args.lane,
+        evidence_sha=args.evidence_sha,
+        fetched=args.fetched,
+    )
 
 
-def import_verified(log_path: Path, destination: Path, *, lane: str, evidence_sha: str = "") -> int:
+def import_verified(
+    log_path: Path,
+    destination: Path,
+    *,
+    lane: str,
+    evidence_sha: str = "",
+    fetched: str = "",
+) -> int:
     """Verify the log, then write the page. A failure leaves ``destination`` unchanged."""
     if lane not in {"mock", "genuine"}:
         print("lane must be mock or genuine", file=sys.stderr)
@@ -42,10 +56,11 @@ def import_verified(log_path: Path, destination: Path, *, lane: str, evidence_sh
     except (OSError, ResearchError) as exc:
         _failed(str(exc))
         return 1
-    if write_dashboard(log_path, destination) != 0:
+    last = _last_valuation(records)
+    note = _freshness(fetched, evidence_sha, str(last.get("session") or ""))
+    if write_dashboard(log_path, destination, evidence_note=note) != 0:
         _failed("paper-v2 verifier rejected the log")
         return 1
-    last = _last_valuation(records)
     print(f"evidence_sha={evidence_sha}")
     print(f"records={len(records)}")
     print(f"last_valuation={last.get('session', '')}")
@@ -64,6 +79,18 @@ def _require_lane(records: tuple[dict[str, object], ...] | list[dict[str, object
 def _last_valuation(records: tuple[dict[str, object], ...] | list[dict[str, object]]) -> dict[str, object]:
     found = [record for record in records if record.get("record_type") == "valuation"]
     return found[-1] if found else {}
+
+
+def _freshness(fetched: str, evidence_sha: str, session: str) -> str:
+    if fetched == "stale":
+        return (
+            "OFFLINE / STALE. This page was not fetched this run. "
+            f"It uses the last origin/evidence {evidence_sha}. Last valuation {session}. "
+            "Do not treat it as a new fetch."
+        )
+    if fetched == "fresh":
+        return f"Fetched origin/evidence {evidence_sha} this run. Last valuation {session}."
+    return ""
 
 
 def _failed(reason: str) -> None:
