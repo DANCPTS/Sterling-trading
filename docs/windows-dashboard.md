@@ -16,7 +16,9 @@ git checkout cursor/invest-dashboard-mvp-5b63
 powershell -ExecutionPolicy Bypass -File deploy\windows\setup.ps1
 ```
 
-`setup.ps1` creates `.venv` and runs `pip install -e .`. `pyproject.toml` lists no runtime dependencies, so that install is the `sterling` package only. It does not install pytest, mypy, ruff, or hypothesis. Git 2.56 is already enough for the fetch.
+`setup.ps1` creates `.venv` and runs `pip install -e .`. On Windows that installs two things: the `sterling` package, and `tzdata` (the IANA time-zone database). Windows has no system copy of `Europe/London`, and importing the ledger raises `ZoneInfoNotFoundError` without `tzdata`. It does not install pytest, mypy, ruff, or hypothesis. Git 2.56 is already enough for the fetch.
+
+The evidence file is saved as UTF-8 with no byte-order mark, and the page is written as UTF-8. The pound sign in the page is the UTF-8 character, not the Windows cp1252 byte.
 
 The private clone must already be at `C:\Users\danie\sterling-forward-evidence`, with `origin` pointing at that repo. The launcher does not clone it and does not put a token in the command.
 

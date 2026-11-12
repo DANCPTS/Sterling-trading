@@ -45,6 +45,7 @@ def test_mock_import_flags_the_old_baseline_and_keeps_the_last_page(tmp_path: Pa
     assert "2.00%" in html
     assert "3.03%" in html
     assert html.count("BUY") >= 6
+    assert b"\xc2\xa3" in page.read_bytes()
     broken = tmp_path / "broken.jsonl"
     broken.write_text(log.read_text(encoding="utf-8").replace("paper-v2", "paper-v9", 1), encoding="utf-8")
     assert import_verified(broken, page, lane="mock", evidence_sha="abc123") == 1

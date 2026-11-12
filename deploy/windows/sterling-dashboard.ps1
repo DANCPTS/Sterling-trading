@@ -24,6 +24,32 @@ function Test-EvidenceOrigin {
     return ($text -eq $https) -or ($text -eq $ssh)
 }
 
+function Save-GitShowUtf8 {
+    param(
+        [string]$Repository,
+        [string]$ObjectPath,
+        [string]$Destination
+    )
+    # Windows PowerShell's Start-Process redirect writes UTF-16. Write UTF-8
+    # with no byte-order mark, and do not print the file.
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    $start = New-Object System.Diagnostics.ProcessStartInfo
+    $start.FileName = "git"
+    $start.WorkingDirectory = $Repository
+    $start.Arguments = "show $ObjectPath"
+    $start.UseShellExecute = $false
+    $start.RedirectStandardOutput = $true
+    $start.CreateNoWindow = $true
+    $start.StandardOutputEncoding = $utf8
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $start
+    if (-not $process.Start()) { return 1 }
+    $text = $process.StandardOutput.ReadToEnd()
+    [System.IO.File]::WriteAllText($Destination, $text, $utf8)
+    $process.WaitForExit()
+    return $process.ExitCode
+}
+
 if ([string]::IsNullOrWhiteSpace($AppRoot)) {
     $AppRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 }
@@ -100,10 +126,8 @@ try {
         $relative = "evidence/invest-v2/forward.jsonl"
     }
 
-    $show = Start-Process -FilePath "git" -WorkingDirectory $EvidenceRoot -ArgumentList @(
-        "show", "origin/evidence:$relative"
-    ) -RedirectStandardOutput $extracted -NoNewWindow -Wait -PassThru
-    if ($show.ExitCode -ne 0) {
+    $showCode = Save-GitShowUtf8 -Repository $EvidenceRoot -ObjectPath "origin/evidence:$relative" -Destination $extracted
+    if ($showCode -ne 0) {
         Write-Host "CHECK FAILED. Could not read $relative from origin/evidence. The previous page was kept."
         & $python -m sterling.research.invest.import_dashboard --mark-kept --out $dashboard
         if ((Test-Path -LiteralPath $dashboard) -and -not $NoBrowser) { Start-Process -FilePath $dashboard }

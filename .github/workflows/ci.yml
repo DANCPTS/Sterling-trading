@@ -26,3 +26,19 @@ jobs:
         run: python -m mypy src
       - name: Pytest
         run: sudo "$(command -v python)" -m pytest --cov=sterling --cov-branch --cov-report=term-missing
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the Windows runtime
+        run: python -m pip install -e .
+      - name: Europe/London comes from tzdata
+        run: python -c "import importlib.metadata as meta; names={item.metadata['Name'].lower() for item in meta.distributions()}; assert 'tzdata' in names, sorted(names); import zoneinfo; zoneinfo.reset_tzpath(to=[]); from zoneinfo import ZoneInfo; ZoneInfo.clear_cache(); assert ZoneInfo('Europe/London').key == 'Europe/London'; import sterling.ledger.calendar, sterling.research.invest.import_dashboard"
+      - name: Launcher entry tests
+        run: |
+          python -m pip install pytest
+          python -m pytest tests/test_london_zone.py tests/research/invest/test_windows_dashboard.py::test_mock_import_flags_the_old_baseline_and_keeps_the_last_page tests/research/invest/test_windows_dashboard.py::test_interrupted_write_keeps_the_page -q --tb=short

@@ -1,7 +1,7 @@
 # One-time setup for the local dashboard. PowerShell 5.1.
-# Creates .venv and installs the sterling package only.
-# pyproject.toml declares no runtime dependencies, so pip does not install
-# pytest, mypy, ruff, or hypothesis.
+# Creates .venv and installs the sterling package.
+# On Windows, pip also installs tzdata, the time-zone database used for
+# Europe/London. It does not install pytest, mypy, ruff, or hypothesis.
 
 param(
     [string]$AppRoot = ""
@@ -38,7 +38,7 @@ if (-not (Test-Path -LiteralPath $venvPython)) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-Write-Host "Installing sterling. No extra packages: the project has no runtime dependencies."
+Write-Host "Installing sterling and tzdata. tzdata supplies Europe/London on Windows. pytest, mypy, ruff, and hypothesis are not installed."
 & $venvPython -m pip install -e $AppRoot
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host "Setup finished. Double-click deploy\windows\Sterling-Dashboard.cmd"
