@@ -9,6 +9,7 @@ from decimal import Decimal
 from sterling.research.invest.book import Book, accrue_cash, apply_targets, mark
 from sterling.research.invest.cash_rate import cash_quote
 from sterling.research.invest.identity import INVEST_V2, performance_document
+from sterling.research.invest.registration import STARTING_CASH_GBP
 from sterling.research.invest.schema import CASH, FUNDS
 from sterling.research.metrics import sharpe_ratio
 from sterling.research.money import ZERO
@@ -27,27 +28,26 @@ def summarise_arm(
     trades: int,
     costs: Decimal,
 ) -> dict[str, object]:
-    start = rows[0][1] if rows else ZERO
-    end = rows[-1][1] if rows else start
+    end = rows[-1][1] if rows else STARTING_CASH_GBP
     daily: list[Decimal] = []
-    peak = start
+    peak = STARTING_CASH_GBP
     drawdown = ZERO
-    for earlier, later in zip(rows, rows[1:], strict=False):
-        if earlier[1] > 0:
-            daily.append(later[1] / earlier[1] - 1)
-        if later[1] > peak:
-            peak = later[1]
-        if peak > 0:
-            gap = (peak - later[1]) / peak
-            if gap > drawdown:
-                drawdown = gap
+    prior = STARTING_CASH_GBP
+    for _day, nav in rows:
+        if prior > 0:
+            daily.append(nav / prior - 1)
+        if nav > peak:
+            peak = nav
+        if peak > 0 and (peak - nav) / peak > drawdown:
+            drawdown = (peak - nav) / peak
+        prior = nav
     deviation = _stdev(daily)
     volatility = None if deviation is None else deviation * Decimal(252).sqrt()
     span = (rows[-1][0] - rows[0][0]).days if len(rows) >= 2 else 0
     annualised = None
-    if span > 0 and start > 0 and end > 0:
-        annualised = (end / start) ** (Decimal("365.25") / Decimal(span)) - 1
-    total = (end / start - 1) if start > 0 else ZERO
+    if span > 0 and STARTING_CASH_GBP > 0 and end > 0:
+        annualised = (end / STARTING_CASH_GBP) ** (Decimal("365.25") / Decimal(span)) - 1
+    total = (end / STARTING_CASH_GBP - 1) if rows and STARTING_CASH_GBP > 0 else ZERO
     return {
         "annualised_return": _text(annualised),
         "costs_gbp": format(costs, "f"),
@@ -56,7 +56,7 @@ def summarise_arm(
         "max_drawdown": format(drawdown, "f"),
         "name": name,
         "sharpe": _text(sharpe_ratio(daily)),
-        "start_nav_gbp": format(start, "f"),
+        "start_nav_gbp": format(STARTING_CASH_GBP, "f"),
         "trades": trades,
         "volatility": _text(volatility),
     }

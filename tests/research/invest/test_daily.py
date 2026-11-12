@@ -230,8 +230,76 @@ def test_cumulative_return_uses_starting_capital_across_sessions(tmp_path: Path,
         worst = Decimal(str(record["drawdown"]))
         peak = high_water
         previous = nav
+    assert previous - start == sum((Decimal(str(row["daily_pnl_gbp"])) for row in rows), Decimal(0))
+    costs = Decimal(0)
+    import json
+
+    for line in log.read_text(encoding="utf-8").splitlines():
+        record = json.loads(line)
+        if record.get("record_type") != "fill":
+            continue
+        for key in ("spread_gbp", "slippage_gbp", "stamp_gbp", "commission_gbp", "fx_cost_gbp"):
+            costs += Decimal(str(record.get(key) or "0"))
+    assert Decimal(str(rows[-1]["cumulative_costs_gbp"])) == costs
+    performance = [
+        json.loads(line)
+        for line in log.read_text(encoding="utf-8").splitlines()
+        if json.loads(line).get("record_type") == "performance"
+    ][-1]
+    arms = performance["arms"]
+    assert isinstance(arms, list)
+    for arm in arms:
+        assert isinstance(arm, dict)
+        assert Decimal(str(arm["start_nav_gbp"])) == start
+        assert Decimal(str(arm["cumulative_return"])) == (Decimal(str(arm["end_nav_gbp"])) / start) - 1
     assert Decimal(str(rows[0]["nav_gbp"])) != start
     assert Decimal(str(rows[1]["cumulative_return"])) != (Decimal(str(rows[1]["nav_gbp"])) / Decimal(str(rows[0]["nav_gbp"]))) - 1
+
+
+def test_pending_open_and_pending_sonia_keep_the_same_invariants(tmp_path: Path, stamped: None) -> None:
+    del stamped
+    log = tmp_path / "gap.jsonl"
+    _decide(log)
+    first = date(2026, 11, 3)
+    second = date(2026, 11, 4)
+    opens = {name: Decimal("100") for name in FUNDS if name != "XSTR"}
+    run_daily(
+        log_path=log,
+        session=first,
+        opens=opens,
+        close_history={name: ((first, Decimal("100")),) for name in FUNDS},
+        sonia=SONIA,
+        recorded_at=datetime(2026, 11, 3, 16, 30, tzinfo=UTC),
+        open_source="SYNTHETIC-open",
+        data_label="SYNTHETIC",
+    )
+    unpublished = ((second, Decimal("4.00")),)
+    run_daily(
+        log_path=log,
+        session=second,
+        opens={name: Decimal("110") for name in FUNDS},
+        close_history={name: ((second, Decimal("110")),) for name in FUNDS},
+        sonia=unpublished,
+        recorded_at=datetime(2026, 11, 4, 16, 30, tzinfo=UTC),
+        open_source="SYNTHETIC-open",
+        data_label="SYNTHETIC",
+    )
+    text = log.read_text(encoding="utf-8")
+    assert "opening_price_unavailable" in text
+    pending = [line for line in text.splitlines() if '"record_type":"interest_pending"' in line]
+    assert pending and all("amount_gbp" not in line for line in pending)
+    rows = _valuations(log)
+    start = Decimal("10000.00")
+    previous = start
+    total = Decimal(0)
+    for record in rows:
+        nav = Decimal(str(record["nav_gbp"]))
+        daily = Decimal(str(record["daily_pnl_gbp"]))
+        assert daily == nav - previous
+        assert Decimal(str(record["cumulative_return"])) == (nav / start) - 1
+        total += daily
+        previous = nav
+    assert total == previous - start
 
 
 def test_daily_code_does_not_call_a_model() -> None:
