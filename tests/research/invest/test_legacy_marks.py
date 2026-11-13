@@ -179,7 +179,18 @@ def test_a_later_inflated_peak_is_not_called_legacy() -> None:
     assert "disagrees with that reconstruction" in text
     assert "Stored max drawdown on 2026-11-14" in text
     legacy, _, later = text.partition("Stored high water on 2026-11-14")
+    del later
     assert "£15,000.00" not in legacy
+    corrected_then_inflated = (
+        _identity("decision", gate="accepted", cash_gbp="10000.00", derived_actions={}),
+        _close("2026-11-12", "9955.14", "-44.86", "0.004486", "10000.00"),
+        _close("2026-11-13", "9947.58", "-7.56", "0.005242", "10000.00"),
+        _close("2026-11-14", "9900.00", "-47.58", format(inflated, "f"), "15000.00"),
+    )
+    plain = " ".join(ledger_warnings(corrected_then_inflated))
+    assert "Legacy accounting discrepancy" not in plain
+    assert "Stored high water on 2026-11-14 is £15,000.00" in plain
+    assert "disagrees with that reconstruction" in plain
     too_low = _close("2026-11-16", "10080.00", "180.00", "0.001", "10100.00")
     too_high = _close("2026-11-16", "10080.00", "180.00", "0.20", "10100.00")
     base = (

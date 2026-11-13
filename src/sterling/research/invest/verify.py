@@ -178,8 +178,9 @@ def _high_water_sequence_notes(records: Sequence[Mapping[str, object]]) -> list[
         path.append((session, peak, worst))
         water = _amount(record.get("high_water_gbp"))
         drawdown = _amount(record.get("drawdown"))
-        # Only the first committed close on 12 Nov 2026 is the known provisional peak.
-        # A later inflated high water is a new error, not another copy of that mark.
+        # Valuation rows store session, nav, high_water_gbp and drawdown. They do not
+        # store an app SHA, so the pre-fix provenance is the first committed close
+        # on 2026-11-12. A later session cannot use that exception.
         first_session = str(valuations[0].get("session") or "")
         if session == "2026-11-12" and session == first_session and water is not None and water > peak + Decimal("0.01"):
             legacy.append((session, water, drawdown if drawdown is not None else Decimal(0)))
@@ -211,7 +212,8 @@ def _legacy_definition_note(
     lines = [
         f"Legacy accounting discrepancy on {session}. Stored high water {_gbp_text(water)} and stored max "
         f"drawdown {display_percent(drawdown)} came from a provisional sizing mark before the first committed "
-        "valuation. The evidence is unchanged. The reconstructed daily-close value is shown instead."
+        "valuation. This exception is only that 12 Nov 2026 close: the log does not record an app SHA. "
+        "The evidence is unchanged. The reconstructed daily-close value is shown instead."
     ]
     for day, day_peak, cumulative in path:
         exact = f"{cumulative * Decimal(100):.4f}%"
