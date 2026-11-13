@@ -69,8 +69,6 @@ def ledger_warnings(records: Sequence[Mapping[str, object]]) -> list[str]:
                     f"{_percent(stored)} does not match NAV against starting capital ({_percent(implied)})."
                 )
     previous = start
-    high: Decimal | None = start
-    worst = Decimal(0)
     total = Decimal(0)
     last_nav: Decimal | None = None
     for record in valuations:
@@ -84,21 +82,10 @@ def ledger_warnings(records: Sequence[Mapping[str, object]]) -> list[str]:
         marked = _marked(record)
         if row_nav is not None and marked is not None and abs(marked - row_nav) > Decimal("0.05"):
             notes.append(f"Cash plus marked holdings on {session} does not match NAV.")
-        water = _amount(record.get("high_water_gbp"))
-        drawdown = _amount(record.get("drawdown"))
-        if water is not None and row_nav is not None and drawdown is not None and water > 0:
-            current = (water - row_nav) / water if row_nav < water else Decimal(0)
-            if drawdown + Decimal("0.0000001") < current:
-                notes.append(f"Drawdown on {session} is below the decline from the recorded high water.")
-            if high is not None and water + Decimal("0.01") < high:
-                notes.append(f"High water on {session} fell.")
-            if drawdown + Decimal("0.0000001") < worst:
-                notes.append(f"Drawdown on {session} fell below the earlier maximum.")
-            high = water
-            worst = drawdown
         if row_nav is not None:
             previous = row_nav
             last_nav = row_nav
+    notes.extend(_high_water_sequence_notes(records))
     if start is not None and last_nav is not None and abs(total - (last_nav - start)) > Decimal("0.05"):
         notes.append("The sum of day P&L does not equal cumulative P&L.")
     notes.extend(_drawdown_notes(records))
@@ -162,6 +149,112 @@ def arm_needs_reconstruction(arm: Mapping[str, object], start: Decimal) -> bool:
         return True
     recorded_start = _amount(arm.get("start_nav_gbp"))
     return recorded_start is not None and abs(recorded_start - end) <= Decimal("0.01") and abs(end - start) > Decimal("0.01")
+
+
+def _high_water_sequence_notes(records: Sequence[Mapping[str, object]]) -> list[str]:
+    """Compare stored high water with the daily-close path.
+
+    A stored peak that sits above every committed close is legacy evidence.
+    A later corrected row can be lower without the daily-close peak falling.
+    A fall that is not explained that way is still reported.
+    """
+    valuations = [record for record in records if record.get("record_type") == "valuation"]
+    if not valuations:
+        return []
+    start = programme_start(records)
+    peak = start
+    worst = Decimal(0)
+    notes: list[str] = []
+    previous_water: Decimal | None = None
+    previous_drawdown: Decimal | None = None
+    previous_session = ""
+    previous_legacy = False
+    legacy: list[tuple[str, Decimal, Decimal, Decimal]] = []
+    path: list[tuple[str, Decimal]] = []
+    for record in valuations:
+        session = str(record.get("session") or "unknown")
+        nav = _amount(record.get("nav_gbp"))
+        if nav is not None:
+            if nav > peak:
+                peak = nav
+            gap = (peak - nav) / peak if peak > 0 and nav < peak else Decimal(0)
+            if gap > worst:
+                worst = gap
+        water = _amount(record.get("high_water_gbp"))
+        drawdown = _amount(record.get("drawdown"))
+        session_legacy = water is not None and water > peak + Decimal("0.01")
+        if session_legacy and water is not None and drawdown is not None:
+            legacy.append((session, water, drawdown, worst))
+        path.append((session, worst))
+        if water is not None and water + Decimal("0.01") < start:
+            notes.append(
+                f"Stored high water on {session} is {_gbp_text(water)}, below the starting capital {_gbp_text(start)}. "
+                "Daily-close high water starts at that capital and does not fall."
+            )
+        if (
+            water is not None
+            and nav is not None
+            and drawdown is not None
+            and water > 0
+            and not session_legacy
+            and drawdown + Decimal("0.0000001") < ((water - nav) / water if nav < water else Decimal(0))
+        ):
+            current = (water - nav) / water if nav < water else Decimal(0)
+            notes.append(
+                f"Stored max drawdown on {session} is {display_percent(drawdown)}, "
+                f"below the {display_percent(current)} decline from that day's stored high water {_gbp_text(water)}. "
+                "The stored field is the cumulative daily-close maximum, not the single-day gap."
+            )
+        if previous_water is not None and water is not None and water + Decimal("0.01") < previous_water:
+            if not (previous_legacy and water + Decimal("0.01") >= peak):
+                notes.append(
+                    f"Stored high water fell from {_gbp_text(previous_water)} on {previous_session} "
+                    f"to {_gbp_text(water)} on {session}. "
+                    f"The daily-close high water from starting capital {_gbp_text(start)} and the committed NAVs "
+                    f"is {_gbp_text(peak)} and did not fall. This stored fall is not the old provisional peak."
+                )
+        if (
+            previous_drawdown is not None
+            and drawdown is not None
+            and drawdown + Decimal("0.0000001") < previous_drawdown
+            and not (previous_legacy and drawdown + Decimal("0.0000001") >= worst)
+        ):
+            notes.append(
+                f"Stored max drawdown fell from {display_percent(previous_drawdown)} on {previous_session} "
+                f"to {display_percent(drawdown)} on {session}. "
+                f"Daily-close max drawdown from committed NAVs is {display_percent(worst)} and did not fall. "
+                "The stored field is the cumulative maximum, not the single-day gap."
+            )
+        if water is not None:
+            previous_water = water
+            previous_session = session
+            previous_legacy = session_legacy
+        if drawdown is not None:
+            previous_drawdown = drawdown
+    if legacy:
+        notes.append(_legacy_definition_note(start, legacy, path))
+    return notes
+
+
+def _legacy_definition_note(
+    start: Decimal,
+    legacy: list[tuple[str, Decimal, Decimal, Decimal]],
+    path: list[tuple[str, Decimal]],
+) -> str:
+    session, water, drawdown, _ = legacy[0]
+    lines = [
+        f"{session} stores high water {_gbp_text(water)} and max drawdown {display_percent(drawdown)}. "
+        "That high water is above every committed daily close, so it is immutable legacy evidence, not a daily close."
+    ]
+    for day, cumulative in path:
+        exact = f"{cumulative * Decimal(100):.4f}%"
+        lines.append(f"Daily-close max drawdown on {day} is {exact} (shown as {display_percent(cumulative)}).")
+    lines.append(
+        f"Daily-close high water from starting capital {_gbp_text(start)} stayed at the running maximum of that "
+        "capital and the committed closes. The stored high water and stored max drawdown can move when the "
+        "definition changes. That is not a falling high water and not a shrinking maximum drawdown."
+    )
+    return " ".join(lines)
 
 
 def _drawdown_notes(records: Sequence[Mapping[str, object]]) -> list[str]:

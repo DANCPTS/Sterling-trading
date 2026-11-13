@@ -125,6 +125,44 @@ def test_old_mock_page_shows_stored_and_daily_close_figures() -> None:
     assert "DATA LABEL: live" not in html
 
 
+def test_mixed_legacy_and_corrected_sessions_do_not_look_like_a_falling_peak() -> None:
+    day_one = (Decimal("10007.95") - Decimal("9955.14")) / Decimal("10007.95")
+    records = (
+        _identity("decision", gate="accepted", cash_gbp="10000.00", derived_actions={}),
+        _close("2026-11-12", "9955.14", "-44.86", format(day_one, "f"), "10007.95"),
+        _close("2026-11-13", "9947.58", "-7.56", "0.005242", "10000.00"),
+    )
+    notes = ledger_warnings(records)
+    html = render_dashboard(records)
+    text = " ".join(notes)
+    assert "High water on 2026-11-13 fell." not in text
+    assert "fell below the earlier maximum" not in text
+    assert "immutable legacy evidence" in text
+    assert "0.4486%" in text
+    assert "0.5242%" in text
+    assert "not a falling high water" in text
+    assert "not a shrinking maximum drawdown" in text
+    assert "0.52%" in html
+    assert "£9,947.58" in html
+    fresh = (
+        _identity("decision", gate="accepted", cash_gbp="10000.00", derived_actions={}),
+        _close("2026-11-12", "9955.14", "-44.86", "0.004486", "10000.00"),
+        _close("2026-11-13", "9947.58", "-7.56", "0.005242", "10000.00"),
+    )
+    fresh_notes = " ".join(ledger_warnings(fresh))
+    assert "fell" not in fresh_notes
+    assert "immutable legacy evidence" not in fresh_notes
+    broken = (
+        _identity("decision", gate="accepted", cash_gbp="10000.00", derived_actions={}),
+        _close("2026-11-12", "11000.00", "1000.00", "0", "11000.00"),
+        _close("2026-11-13", "10500.00", "-500.00", "0", "10000.00"),
+    )
+    broken_notes = " ".join(ledger_warnings(broken))
+    assert "Stored high water fell from £11,000.00 on 2026-11-12 to £10,000.00 on 2026-11-13" in broken_notes
+    assert "not the old provisional peak" in broken_notes
+    assert "immutable legacy evidence" not in broken_notes
+
+
 def test_benchmark_edges_are_labelled_and_do_not_replace_a_reconciled_row() -> None:
     empty = render_dashboard(())
     assert "No benchmark recorded." in empty
@@ -296,6 +334,22 @@ def _multi_session() -> tuple[dict[str, object], ...]:
         ),
         _identity("performance", session="2026-11-12", arms=[_legacy_arm("buy_and_hold_vwrp", Decimal("9900.00"))]),
         _identity("performance", session="2026-11-13", arms=[_legacy_arm("buy_and_hold_vwrp", Decimal("10200.00"))]),
+    )
+
+
+def _close(session: str, nav: str, daily: str, drawdown: str, water: str) -> dict[str, object]:
+    return _identity(
+        "valuation",
+        session=session,
+        nav_gbp=nav,
+        cash_gbp=nav,
+        daily_pnl_gbp=daily,
+        cumulative_return=format(Decimal(nav) / Decimal("10000.00") - 1, "f"),
+        drawdown=drawdown,
+        high_water_gbp=water,
+        holdings={},
+        prices={},
+        data_label="live",
     )
 
 
