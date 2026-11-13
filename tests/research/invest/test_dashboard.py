@@ -51,7 +51,7 @@ def test_page_escapes_marks_lane_and_has_no_order_controls(tmp_path: Path, stamp
     assert 'name="viewport" content="width=device-width, initial-scale=1"' in html
     assert "@media (max-width: 720px)" in html
     assert "Sterling FX: not built yet" in html
-    assert "Yahoo only / not exchange verified" in html
+    assert "Yahoo market prices (delayed, not exchange-verified)" in html
     assert "No AI explanation recorded" in html
     assert "MOCK" in html
     assert "<button" not in html and "<form" not in html and "place_order" not in html
@@ -110,7 +110,7 @@ def test_synthetic_page_is_not_labelled_as_yahoo(tmp_path: Path, stamped: None) 
     assert write_dashboard(log, page) == 0
     html = page.read_text(encoding="utf-8")
     assert "SYNTHETIC fixture" in html
-    assert "Yahoo only" not in html
+    assert "Yahoo market prices" not in html
     assert "£10,000.00" in html
     assert "does not match" not in html
 
@@ -165,7 +165,7 @@ def test_mismatched_return_is_shown_not_hidden() -> None:
     assert "does not match NAV against starting capital" in html
     assert "3.50%" in html
     assert "2.83%" in html
-    assert "Yahoo only" not in html
+    assert "Yahoo market prices" not in html
 
 
 def test_verifier_flags_an_old_return_without_rejecting_the_log() -> None:
@@ -209,6 +209,10 @@ def test_calendar_marks_weekends_as_no_session(tmp_path: Path, stamped: None) ->
     assert write_dashboard(log, html) == 0
     text = html.read_text(encoding="utf-8")
     assert "No session" in text
+    assert "Awaiting session" in text
+    assert "not real-time" in text
+    assert "Portfolio equity from starting capital" in text
+    assert "<polyline" in text
     assert "November 2026" in text
     assert 'data-label="Price"' in text
     assert "tabular-nums" in text
@@ -216,8 +220,8 @@ def test_calendar_marks_weekends_as_no_session(tmp_path: Path, stamped: None) ->
     from sterling.research.fx.grok_forward import ProposalLog
 
     notes = ledger_warnings(ProposalLog(log).records())
-    assert any("daily-close" in note and "not an audited intraday drawdown" in note for note in notes)
-    assert all("does not match NAV against starting capital" not in note for note in notes)
+    assert notes == []
+    assert "reconstructed from older evidence" not in text
 
 
 def test_renderer_escapes_a_reason() -> None:

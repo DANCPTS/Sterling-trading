@@ -104,21 +104,31 @@ def test_old_mock_page_shows_stored_and_daily_close_figures() -> None:
     notes = ledger_warnings(records)
     html = render_dashboard(records)
     assert records == tuple(before)
-    assert any("0.4486%" in note and "0.53%" in note and "not an audited intraday drawdown" in note for note in notes)
-    assert any("0.0904%" in note and "-0.09%" in note for note in notes)
-    assert any("0.0095%" in note and "+0.01%" in note for note in notes)
-    assert "0.45% daily close; stored 0.53%" in html
+    assert any("0.4486%" in note and "0.53%" in note and "reconstructed from older evidence" in note.lower() for note in notes)
+    assert any("-0.0904%" in note and "reconstructed from older evidence" in note.lower() for note in notes)
+    assert any("+0.0095%" in note and "reconstructed from older evidence" in note.lower() for note in notes)
+    assert "Daily-close drawdown" in html
+    assert "0.4486%" in html
+    assert "0.45% reconstructed from older evidence" in html
     assert "£10,007.95" in html
-    assert "stored 0.00%; from £10,000.00 -0.09%" in html
-    assert "stored 0.00%; daily close 0.09%" in html
-    assert "stored 0.00%; from £10,000.00 +0.01%" in html
+    assert "reconstructed from older evidence -0.0904% (stored 0.00%)" in html
+    assert "reconstructed from older evidence +0.0095% (stored 0.00%)" in html
+    assert "reconstructed from older evidence 0.0904% (stored 0.00%)" in html
     assert "MOCK / PAPER" in html
+    assert "£9,955.14" in html
+    assert "£1,428.41" in html
+    assert "£8.57" in html
+    assert "£0.95" in html
+    assert html.count(">BUY<") == 6
+    assert "as of 2026-11-12 session close, not real-time (fresh)" in html
+    assert "Awaiting session" in html
+    assert "DATA LABEL: live" not in html
 
 
 def test_benchmark_edges_are_labelled_and_do_not_replace_a_reconciled_row() -> None:
     empty = render_dashboard(())
     assert "No benchmark recorded." in empty
-    assert "daily close" not in empty
+    assert "reconstructed from older evidence" not in empty
 
     stale = render_dashboard(_stale_records())
     assert "Benchmark row 2026-11-12 is older than the latest valuation 2026-11-13" in stale
@@ -128,9 +138,8 @@ def test_benchmark_edges_are_labelled_and_do_not_replace_a_reconciled_row() -> N
     assert "buy_and_hold_vwrp has no readable end value" in invalid
 
     multi = render_dashboard(_multi_session())
-    assert "stored 0.00%; from £10,000.00 +2.00%" in multi
-    assert "stored 0.00%; daily close 1.00%" in multi
-    assert "1.0000%" in multi
+    assert "reconstructed from older evidence +2.00% (stored 0.00%)" in multi
+    assert "reconstructed from older evidence 1.00% (stored 0.00%)" in multi
 
 
 def mark_cash(book: Book, cash: Decimal, session: date) -> Decimal:
@@ -152,17 +161,39 @@ def _legacy_records() -> tuple[dict[str, object], ...]:
             derived_actions={},
         ),
         _identity(
+            "cash_interest",
+            session="2026-11-12",
+            status="accrued",
+            amount_gbp="0.95",
+        ),
+        *[
+            _identity(
+                "fill",
+                session="2026-11-12",
+                fund=name,
+                side="BUY",
+                units="1",
+                price_gbp="100.00",
+                cash_delta_gbp="-100.00",
+            )
+            for name in FUNDS
+        ],
+        _identity(
             "valuation",
             session="2026-11-12",
             timestamp_utc="2026-11-12T16:30:00+00:00",
             nav_gbp=format(NAV, "f"),
-            cash_gbp=format(NAV, "f"),
+            cash_gbp="1428.41",
             daily_pnl_gbp=format(NAV - Decimal("10000.00"), "f"),
             cumulative_return=format(NAV / Decimal("10000.00") - 1, "f"),
+            cumulative_costs_gbp="8.57",
             drawdown=format(STORED_DRAWDOWN, "f"),
             high_water_gbp=format(WATER, "f"),
-            holdings={},
-            prices={},
+            holdings={name: "1" for name in FUNDS},
+            prices={
+                name: {"price_gbp": price, "status": "fresh", "last_good": "2026-11-12"}
+                for name, price in zip(FUNDS, ("1421.13", "1421.12", "1421.12", "1421.12", "1421.12", "1421.12"), strict=True)
+            },
             data_label="live",
         ),
         _identity(

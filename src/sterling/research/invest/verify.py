@@ -152,6 +152,18 @@ def same_start_return(end: Decimal, start: Decimal) -> Decimal:
     return end / start - 1
 
 
+def arm_needs_reconstruction(arm: Mapping[str, object], start: Decimal) -> bool:
+    """True when the stored arm was measured from its own end instead of £10,000."""
+    end = _amount(arm.get("end_nav_gbp"))
+    if end is None or start <= 0:
+        return False
+    stored = _amount(arm.get("cumulative_return"))
+    if stored is None or abs(stored - same_start_return(end, start)) > Decimal("0.0000001"):
+        return True
+    recorded_start = _amount(arm.get("start_nav_gbp"))
+    return recorded_start is not None and abs(recorded_start - end) <= Decimal("0.01") and abs(end - start) > Decimal("0.01")
+
+
 def _drawdown_notes(records: Sequence[Mapping[str, object]]) -> list[str]:
     closes = observable_closes(records)
     valuations = [record for record in records if record.get("record_type") == "valuation"]
@@ -165,21 +177,22 @@ def _drawdown_notes(records: Sequence[Mapping[str, object]]) -> list[str]:
     water = _amount(latest.get("high_water_gbp"))
     if stored is None:
         return [
-            f"Stored drawdown on {session} cannot be read. "
-            f"Daily-close drawdown from starting capital {_gbp_text(start)} and the recorded closing NAVs "
-            f"is {_precise(reconstructed)} (shown as {_percent(reconstructed)}). "
-            "That figure is the decline between daily closes. It is not an audited intraday drawdown."
+            f"Stored drawdown on {session} cannot be read. Reconstructed from older evidence, "
+            f"daily-close drawdown from starting capital {_gbp_text(start)} and the recorded closing NAVs "
+            f"is {display_percent(reconstructed)}. "
+            "That figure is the decline between daily closes. It is not an intraday drawdown."
         ]
     daily_peak = max([start, *closes])
     water_above = water is not None and water > daily_peak + Decimal("0.01")
     if abs(stored - reconstructed) <= Decimal("0.0000001") and not water_above:
         return []
     water_text = _gbp_text(water) if water is not None else "unreadable"
+    exact = f"{reconstructed * Decimal(100):.4f}%"
     return [
-        f"Stored drawdown {_percent(stored)} on {session} uses high water {water_text}. "
-        f"Daily-close drawdown from starting capital {_gbp_text(start)} and the recorded closing NAVs "
-        f"is {_precise(reconstructed)} (shown as {_percent(reconstructed)}). "
-        "That figure is the decline between daily closes. It is not an audited intraday drawdown."
+        f"Stored drawdown {display_percent(stored)} and high water {water_text} on {session} were left unchanged. "
+        f"Reconstructed from older evidence, daily-close drawdown from starting capital {_gbp_text(start)} "
+        f"and the recorded closing NAVs is {exact}. "
+        "That figure is the decline between daily closes. It is not an intraday drawdown."
     ]
 
 
@@ -206,22 +219,19 @@ def _benchmark_notes(records: Sequence[Mapping[str, object]]) -> list[str]:
         if end is None:
             notes.append(f"{name} has no readable end value, so its return was not reconstructed.")
             continue
+        if not arm_needs_reconstruction(arm, start):
+            continue
         reconstructed = same_start_return(end, start)
         stored = _amount(arm.get("cumulative_return"))
         path = closing_drawdown(start, _arm_closes(records, name))
         stored_dd = _amount(arm.get("max_drawdown"))
-        return_off = stored is None or abs(stored - reconstructed) > Decimal("0.0000001")
-        drawdown_off = stored_dd is None or abs(stored_dd - path) > Decimal("0.0000001")
-        if not return_off and not drawdown_off:
-            continue
-        stored_return = _percent(stored) if stored is not None else "unreadable"
-        stored_draw = _percent(stored_dd) if stored_dd is not None else "unreadable"
+        stored_return = display_percent(stored) if stored is not None else "unreadable"
+        stored_draw = display_percent(stored_dd) if stored_dd is not None else "unreadable"
         notes.append(
-            f"{name} stored return {stored_return} and stored max drawdown {stored_draw}. "
-            f"From starting capital {_gbp_text(start)} the same-start return is {_signed_precise(reconstructed)} "
-            f"(shown as {_signed_percent(reconstructed)}) and the daily-close drawdown from the recorded "
-            f"daily marks is {_precise(path)} (shown as {_percent(path)}). "
-            "The daily-close figure is not an audited intraday drawdown."
+            f"{name} stored return {stored_return} and stored max drawdown {stored_draw} were left unchanged. "
+            f"Reconstructed from older evidence, the return from starting capital {_gbp_text(start)} is "
+            f"{display_percent(reconstructed, signed=True)} and the daily-close drawdown from the recorded "
+            f"daily marks is {display_percent(path)}. That drawdown is not an intraday figure."
         )
     return notes
 
@@ -275,26 +285,20 @@ def _amount(value: object) -> Decimal | None:
         return None
 
 
+def display_percent(value: Decimal, *, signed: bool = False) -> str:
+    """Two decimal places, or four when the percent would otherwise collapse toward zero."""
+    percent = value * Decimal(100)
+    if percent != 0 and abs(percent) < Decimal("0.1"):
+        text = f"{percent:.4f}%"
+    else:
+        text = f"{percent:.2f}%"
+    if signed and value > 0:
+        return f"+{text}"
+    return text
+
+
 def _percent(value: Decimal) -> str:
     return f"{value * 100:.2f}%"
-
-
-def _precise(value: Decimal) -> str:
-    return f"{value * 100:.4f}%"
-
-
-def _signed_percent(value: Decimal) -> str:
-    text = _percent(value)
-    if value > 0:
-        return f"+{text}"
-    return text
-
-
-def _signed_precise(value: Decimal) -> str:
-    text = _precise(value)
-    if value > 0:
-        return f"+{text}"
-    return text
 
 
 def _gbp_text(value: Decimal) -> str:

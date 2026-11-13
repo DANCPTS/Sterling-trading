@@ -24,7 +24,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -116,9 +116,12 @@ def _write_synthetic(path: Path) -> None:
         datetime(2026, 11, 18, 16, 30, tzinfo=LONDON),
     ]
     sonia = ((datetime(2026, 11, 10).date(), Decimal("4.00")),)
+    history: dict[str, list[tuple[date, Decimal]]] = {name: [] for name in FUNDS}
     for index, moment in enumerate(sessions):
         opens = {name: Decimal("101") + index for name in FUNDS if name != "XSTR"}
-        closes = {name: ((moment.date(), Decimal("102") + index),) for name in FUNDS}
+        for name in FUNDS:
+            history[name].append((moment.date(), Decimal("102") + index))
+        closes = {name: tuple(points) for name, points in history.items()}
         series = ((moment.date(), Decimal("4.00")),) if index == len(sessions) - 1 else sonia
         run_daily(
             log_path=path,

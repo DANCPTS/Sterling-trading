@@ -12,7 +12,9 @@ from zoneinfo import ZoneInfo
 from sterling.research.invest.report import _decimal, _money, _pct
 from sterling.research.invest.sessions import session_open
 from sterling.research.invest.verify import (
+    arm_needs_reconstruction,
     closing_drawdown,
+    display_percent,
     ledger_warnings,
     observable_closes,
     programme_start,
@@ -20,7 +22,6 @@ from sterling.research.invest.verify import (
 )
 
 LONDON = ZoneInfo("Europe/London")
-_YAHOO = "Yahoo only / not exchange verified"
 
 
 def render_dashboard(records: Sequence[Mapping[str, object]], *, evidence_note: str = "") -> str:
@@ -85,7 +86,7 @@ th.num, td.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
 .cell .v {{ display: block; font-size: 0.78rem; }}
 .cell.off {{ color: #6d7585; }}
 .cell.empty {{ background: transparent; }}
-.chart {{ width: 100%; height: 8rem; background: #171b22; border-radius: 0.4rem; }}
+.chart, .equity {{ width: 100%; height: 8rem; background: #171b22; border-radius: 0.4rem; display: block; }}
 pre {{ white-space: pre-wrap; word-break: break-word; background: #12161c; padding: 0.6rem; border-radius: 0.4rem; }}
 details {{ margin-top: 0.4rem; }}
 @media (max-width: 720px) {{
@@ -112,9 +113,8 @@ details {{ margin-top: 0.4rem; }}
 <span class="product on">Sterling Invest</span>
 <span class="product off">Sterling FX: not built yet</span>
 </div>
-<p class="banner">DATA LABEL: {_esc(label)}. Read only. This page cannot place an order.</p>
+<p class="banner">{_esc(_data_banner(label, lane))}</p>
 {_note_line(evidence_note)}
-<p class="warn">{_esc(_source_banner(label))}</p>
 {_warnings(latest, pending_interest)}
 {_inconsistencies(records, latest, start)}
 <section>
@@ -126,20 +126,21 @@ details {{ margin-top: 0.4rem; }}
 {_card("Cumulative P&L", _signed(cumulative))}
 {_card("Cash", _gbp(latest.get("cash_gbp")))}
 {_card("Cumulative costs", _gbp(latest.get("cumulative_costs_gbp")))}
-{_card("Drawdown", _drawdown_text(records, latest))}
+{_card("Daily-close drawdown", _drawdown_text(records, latest))}
 {_card("Cumulative return", _pct(_shown_return(latest, start, nav)))}
 </div>
 <p>{_pnl_line(realised, sells, unrealised, accrued, pending_interest)}</p>
 </section>
 <section>
 <h2>Daily P&amp;L</h2>
+{_equity(records)}
 {_chart(records)}
 <div class="calendar">{_calendar(records)}</div>
 </section>
 <section>
 <h2>Holdings</h2>
 <div class="scroll"><table>
-<thead><tr><th>Fund</th><th>Units</th><th>Price</th><th>Value</th><th>Status</th></tr></thead>
+<thead><tr><th>Fund</th><th>Units</th><th>Price</th><th>Value</th><th>As of</th></tr></thead>
 <tbody>{_holdings(latest)}</tbody>
 </table></div>
 </section>
@@ -296,10 +297,14 @@ def _note_line(note: str) -> str:
     return f'<p id="evidence-fetch" class="{kind}">{_esc(note)}</p>'
 
 
-def _source_banner(label: str) -> str:
+def _data_banner(label: str, lane: str) -> str:
     if "SYNTHETIC" in label.upper():
-        return "SYNTHETIC fixture. Not a market print."
-    return _YAHOO
+        return "DATA LABEL: SYNTHETIC. SYNTHETIC fixture. Not a market print. Read only. This page cannot place an order."
+    book = "MOCK / PAPER" if lane == "mock" else "GENUINE PAPER"
+    return (
+        "Price inputs: Yahoo market prices (delayed, not exchange-verified) "
+        f"used for {book} trading. Read only. This page cannot place an order."
+    )
 
 
 def _shown_return(latest: Mapping[str, object], start: Decimal | None, nav: object) -> object:
@@ -372,24 +377,24 @@ def _calendar(records: Sequence[Mapping[str, object]]) -> str:
     months: list[str] = []
     cursor = date(first.year, first.month, 1)
     while cursor <= last:
-        months.append(_month(cursor.year, cursor.month, by_day))
+        months.append(_month(cursor.year, cursor.month, by_day, last))
         cursor = date(cursor.year + 1, 1, 1) if cursor.month == 12 else date(cursor.year, cursor.month + 1, 1)
     return legend + "".join(months)
 
 
-def _month(year: int, month: int, by_day: dict[date, Mapping[str, object]]) -> str:
+def _month(year: int, month: int, by_day: dict[date, Mapping[str, object]], latest: date) -> str:
     names = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
     head = "".join(f"<span>{name}</span>" for name in names)
     cells: list[str] = []
     for week in calendar.Calendar(firstweekday=0).monthdayscalendar(year, month):
         for day in week:
-            cells.append(_day_cell(year, month, day, by_day))
+            cells.append(_day_cell(year, month, day, by_day, latest))
     title = date(year, month, 1).strftime("%B %Y")
     grid = "".join(cells)
     return f'<div class="month"><h3>{_esc(title)}</h3><div class="weekdays">{head}</div><div class="grid">{grid}</div></div>'
 
 
-def _day_cell(year: int, month: int, day: int, by_day: dict[date, Mapping[str, object]]) -> str:
+def _day_cell(year: int, month: int, day: int, by_day: dict[date, Mapping[str, object]], latest: date) -> str:
     if day == 0:
         return '<span class="cell empty"></span>'
     current = date(year, month, day)
@@ -401,7 +406,40 @@ def _day_cell(year: int, month: int, day: int, by_day: dict[date, Mapping[str, o
         return f'<span class="cell {tone}"><span class="d">{day}</span><span class="v">{value}</span></span>'
     if session_open(current) is None:
         return f'<span class="cell off"><span class="d">{day}</span><span class="v">No session</span></span>'
+    if current > latest:
+        return f'<span class="cell"><span class="d">{day}</span><span class="v">Awaiting session</span></span>'
     return f'<span class="cell"><span class="d">{day}</span><span class="v">No mark</span></span>'
+
+
+def _equity(records: Sequence[Mapping[str, object]]) -> str:
+    """Inline equity curve. The first point is the £10,000 starting capital."""
+    start = programme_start(records)
+    values = [start]
+    for record in records:
+        if record.get("record_type") != "valuation":
+            continue
+        nav = _decimal(record.get("nav_gbp"))
+        if nav is not None:
+            values.append(nav)
+    if len(values) == 1 and not observable_closes(records):
+        return ""
+    low = min(values)
+    high = max(values)
+    span = high - low or Decimal(1)
+    coords: list[str] = []
+    last = Decimal(len(values) - 1) or Decimal(1)
+    for index, value in enumerate(values):
+        x = Decimal(index) / last * Decimal(100)
+        y = Decimal(36) - (value - low) / span * Decimal(30)
+        coords.append(f"{x:.2f},{y:.2f}")
+    points = " ".join(coords)
+    label = f"Portfolio equity from starting capital {_gbp(start)}"
+    return (
+        f'<svg class="equity" viewBox="0 0 100 40" role="img" aria-label="{_esc(label)}">'
+        f'<polyline points="{points}" fill="none" stroke="#8eb4ff" stroke-width="0.8" '
+        f'stroke-linejoin="round" stroke-linecap="round"/></svg>'
+        f"<p>{_esc(label)}. Daily closes only.</p>"
+    )
 
 
 def _chart(records: Sequence[Mapping[str, object]]) -> str:
@@ -430,11 +468,11 @@ def _holdings(latest: Mapping[str, object]) -> str:
         return '<tr><td colspan="5">No holdings recorded.</td></tr>'
     rows = []
     nav = _decimal(latest.get("nav_gbp"))
+    session = str(latest.get("session") or "")
     for name in sorted(held):
         units = _decimal(held.get(name))
         info = prices.get(name) if isinstance(prices, dict) else None
         price = _decimal(info.get("price_gbp")) if isinstance(info, dict) else None
-        status = str(info.get("status")) if isinstance(info, dict) else ""
         value = units * price if units is not None and price is not None else None
         weight = f" ({_pct(value / nav)})" if value is not None and nav not in (None, 0) else ""
         rows.append(
@@ -443,10 +481,19 @@ def _holdings(latest: Mapping[str, object]) -> str:
             + _td("Units", _esc(held.get(name)))
             + _td("Price", _esc(_gbp(price)))
             + _td("Value", _esc(_gbp(value)) + _esc(weight))
-            + _td("Status", _esc(status), text=True)
+            + _td("As of", _esc(_price_as_of(info, session)), text=True)
             + "</tr>"
         )
     return "".join(rows)
+
+
+def _price_as_of(info: object, session: str) -> str:
+    """A fresh Yahoo close is the session's recorded price, not a live quote."""
+    if not isinstance(info, dict):
+        return "as-of not recorded; not real-time"
+    when = str(info.get("last_good") or session or "unknown session")
+    status = str(info.get("status") or "unlabelled")
+    return f"as of {when} session close, not real-time ({status})"
 
 
 def _decisions(records: Sequence[Mapping[str, object]]) -> str:
@@ -524,12 +571,10 @@ def _drawdown_text(records: Sequence[Mapping[str, object]], latest: Mapping[str,
     if not closes:
         return _pct(latest.get("drawdown"))
     reconstructed = closing_drawdown(programme_start(records), closes)
+    shown = display_percent(reconstructed)
     if stored is not None and abs(stored - reconstructed) <= Decimal("0.0000001"):
-        return _pct(stored)
-    shown = _pct(reconstructed)
-    if stored is None:
-        return f"{shown} daily close"
-    return f"{shown} daily close; stored {_pct(stored)}"
+        return shown
+    return f"{shown} reconstructed from older evidence"
 
 
 def _benchmarks(performance: Mapping[str, object], records: Sequence[Mapping[str, object]]) -> str:
@@ -556,26 +601,24 @@ def _benchmarks(performance: Mapping[str, object], records: Sequence[Mapping[str
 def _arm_return(arm: Mapping[str, object], start: Decimal) -> str:
     stored = _decimal(arm.get("cumulative_return"))
     end = _decimal(arm.get("end_nav_gbp"))
-    shown = _pct(arm.get("cumulative_return")) or "unreadable"
-    if end is None or start <= 0:
+    shown = display_percent(stored) if stored is not None else (_pct(arm.get("cumulative_return")) or "unreadable")
+    if end is None or start <= 0 or not arm_needs_reconstruction(arm, start):
         return shown
     reconstructed = same_start_return(end, start)
-    if stored is not None and abs(stored - reconstructed) <= Decimal("0.0000001"):
-        return _pct(stored)
-    return f"stored {shown}; from {_gbp(start)} {_signed_pct(reconstructed)}"
+    return f"reconstructed from older evidence {display_percent(reconstructed, signed=True)} (stored {shown})"
 
 
 def _arm_drawdown(arm: Mapping[str, object], records: Sequence[Mapping[str, object]], start: Decimal) -> str:
     stored = _decimal(arm.get("max_drawdown"))
+    if not arm_needs_reconstruction(arm, start):
+        return display_percent(stored) if stored is not None else _pct(arm.get("max_drawdown"))
     name = str(arm.get("name") or "")
     closes = _arm_ends(records, name)
     if not closes or start <= 0:
         return _pct(arm.get("max_drawdown"))
     reconstructed = closing_drawdown(start, closes)
-    if stored is not None and abs(stored - reconstructed) <= Decimal("0.0000001"):
-        return _pct(stored)
-    shown = _pct(arm.get("max_drawdown")) or "unreadable"
-    return f"stored {shown}; daily close {_pct(reconstructed)}"
+    shown = display_percent(stored) if stored is not None else (_pct(arm.get("max_drawdown")) or "unreadable")
+    return f"reconstructed from older evidence {display_percent(reconstructed)} (stored {shown})"
 
 
 def _arm_ends(records: Sequence[Mapping[str, object]], name: str) -> list[Decimal]:
@@ -592,13 +635,6 @@ def _arm_ends(records: Sequence[Mapping[str, object]], name: str) -> list[Decima
                 if end is not None:
                     closes.append(end)
     return closes
-
-
-def _signed_pct(value: Decimal) -> str:
-    text = _pct(value)
-    if value > 0 and text:
-        return f"+{text}"
-    return text
 
 
 def _grok(records: Sequence[Mapping[str, object]], lane: str) -> str:
