@@ -11,7 +11,13 @@ from zoneinfo import ZoneInfo
 
 from sterling.research.invest.report import _decimal, _money, _pct
 from sterling.research.invest.sessions import session_open
-from sterling.research.invest.verify import ledger_warnings
+from sterling.research.invest.verify import (
+    closing_drawdown,
+    ledger_warnings,
+    observable_closes,
+    programme_start,
+    same_start_return,
+)
 
 LONDON = ZoneInfo("Europe/London")
 _YAHOO = "Yahoo only / not exchange verified"
@@ -120,7 +126,7 @@ details {{ margin-top: 0.4rem; }}
 {_card("Cumulative P&L", _signed(cumulative))}
 {_card("Cash", _gbp(latest.get("cash_gbp")))}
 {_card("Cumulative costs", _gbp(latest.get("cumulative_costs_gbp")))}
-{_card("Drawdown", _pct(latest.get("drawdown")))}
+{_card("Drawdown", _drawdown_text(records, latest))}
 {_card("Cumulative return", _pct(_shown_return(latest, start, nav)))}
 </div>
 <p>{_pnl_line(realised, sells, unrealised, accrued, pending_interest)}</p>
@@ -157,7 +163,7 @@ details {{ margin-top: 0.4rem; }}
 <h2>Benchmarks</h2>
 <div class="scroll"><table>
 <thead><tr><th>Book</th><th>End value</th><th>Return</th><th>Max drawdown</th><th>Trades</th><th>Costs</th></tr></thead>
-<tbody>{_benchmarks(performance)}</tbody>
+<tbody>{_benchmarks(performance, records)}</tbody>
 </table></div>
 </section>
 <section>
@@ -512,24 +518,87 @@ def _orders(records: Sequence[Mapping[str, object]]) -> str:
     return "".join(lines)
 
 
-def _benchmarks(performance: Mapping[str, object]) -> str:
+def _drawdown_text(records: Sequence[Mapping[str, object]], latest: Mapping[str, object]) -> str:
+    stored = _decimal(latest.get("drawdown"))
+    closes = observable_closes(records)
+    if not closes:
+        return _pct(latest.get("drawdown"))
+    reconstructed = closing_drawdown(programme_start(records), closes)
+    if stored is not None and abs(stored - reconstructed) <= Decimal("0.0000001"):
+        return _pct(stored)
+    shown = _pct(reconstructed)
+    if stored is None:
+        return f"{shown} daily close"
+    return f"{shown} daily close; stored {_pct(stored)}"
+
+
+def _benchmarks(performance: Mapping[str, object], records: Sequence[Mapping[str, object]]) -> str:
     raw = performance.get("arms")
     arms = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
     if not arms:
         return '<tr><td colspan="6">No benchmark recorded.</td></tr>'
     rows = []
+    start = programme_start(records)
     for arm in arms:
         rows.append(
             "<tr>"
             + _td("Book", _esc(arm.get("name")), text=True)
             + _td("End value", _esc(_gbp(arm.get("end_nav_gbp"))))
-            + _td("Return", _esc(_pct(arm.get("cumulative_return"))))
-            + _td("Max drawdown", _esc(_pct(arm.get("max_drawdown"))))
+            + _td("Return", _esc(_arm_return(arm, start)))
+            + _td("Max drawdown", _esc(_arm_drawdown(arm, records, start)))
             + _td("Trades", _esc(arm.get("trades")))
             + _td("Costs", _esc(_gbp(arm.get("costs_gbp"))))
             + "</tr>"
         )
     return "".join(rows)
+
+
+def _arm_return(arm: Mapping[str, object], start: Decimal) -> str:
+    stored = _decimal(arm.get("cumulative_return"))
+    end = _decimal(arm.get("end_nav_gbp"))
+    shown = _pct(arm.get("cumulative_return")) or "unreadable"
+    if end is None or start <= 0:
+        return shown
+    reconstructed = same_start_return(end, start)
+    if stored is not None and abs(stored - reconstructed) <= Decimal("0.0000001"):
+        return _pct(stored)
+    return f"stored {shown}; from {_gbp(start)} {_signed_pct(reconstructed)}"
+
+
+def _arm_drawdown(arm: Mapping[str, object], records: Sequence[Mapping[str, object]], start: Decimal) -> str:
+    stored = _decimal(arm.get("max_drawdown"))
+    name = str(arm.get("name") or "")
+    closes = _arm_ends(records, name)
+    if not closes or start <= 0:
+        return _pct(arm.get("max_drawdown"))
+    reconstructed = closing_drawdown(start, closes)
+    if stored is not None and abs(stored - reconstructed) <= Decimal("0.0000001"):
+        return _pct(stored)
+    shown = _pct(arm.get("max_drawdown")) or "unreadable"
+    return f"stored {shown}; daily close {_pct(reconstructed)}"
+
+
+def _arm_ends(records: Sequence[Mapping[str, object]], name: str) -> list[Decimal]:
+    closes: list[Decimal] = []
+    for record in records:
+        if record.get("record_type") != "performance":
+            continue
+        raw = record.get("arms")
+        if not isinstance(raw, list):
+            continue
+        for arm in raw:
+            if isinstance(arm, dict) and arm.get("name") == name:
+                end = _decimal(arm.get("end_nav_gbp"))
+                if end is not None:
+                    closes.append(end)
+    return closes
+
+
+def _signed_pct(value: Decimal) -> str:
+    text = _pct(value)
+    if value > 0 and text:
+        return f"+{text}"
+    return text
 
 
 def _grok(records: Sequence[Mapping[str, object]], lane: str) -> str:

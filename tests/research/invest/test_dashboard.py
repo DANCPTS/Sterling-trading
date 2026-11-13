@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import threading
+import time
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -214,7 +215,9 @@ def test_calendar_marks_weekends_as_no_session(tmp_path: Path, stamped: None) ->
     assert "£" in text
     from sterling.research.fx.grok_forward import ProposalLog
 
-    assert ledger_warnings(ProposalLog(log).records()) == []
+    notes = ledger_warnings(ProposalLog(log).records())
+    assert any("daily-close" in note and "not an audited intraday drawdown" in note for note in notes)
+    assert all("does not match NAV against starting capital" not in note for note in notes)
 
 
 def test_renderer_escapes_a_reason() -> None:
@@ -282,7 +285,7 @@ def _fetch(port: int) -> bytes:
             if response.status == 200:
                 return last
         except OSError:
-            pass
+            time.sleep(0.05)
     return last
 
 

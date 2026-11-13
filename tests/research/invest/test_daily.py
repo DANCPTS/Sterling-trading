@@ -381,6 +381,28 @@ def _replay_cash(rows: list[tuple[str, Decimal, Decimal]]) -> Decimal:
     return balance
 
 
+def test_pre_trade_cash_does_not_become_the_high_water(tmp_path: Path, stamped: None) -> None:
+    del stamped
+    log = tmp_path / "interest.jsonl"
+    _decide(log)
+    session = date(2026, 11, 3)
+    run_daily(
+        log_path=log,
+        session=session,
+        opens={name: Decimal("100") for name in FUNDS},
+        close_history={name: ((session, Decimal("100")),) for name in FUNDS},
+        sonia=SONIA,
+        recorded_at=datetime(2026, 11, 3, 16, 30, tzinfo=UTC),
+        open_source="SYNTHETIC-open",
+        data_label="SYNTHETIC",
+    )
+    row = _valuations(log)[-1]
+    nav = Decimal(str(row["nav_gbp"]))
+    assert nav < Decimal("10000.00")
+    assert Decimal(str(row["high_water_gbp"])) == Decimal("10000.00")
+    assert Decimal(str(row["drawdown"])) == (Decimal("10000.00") - nav) / Decimal("10000.00")
+
+
 def _decide(log: Path) -> None:
     single = {name: "0.10" for name in FUNDS}
     single[CASH] = "0.40"
