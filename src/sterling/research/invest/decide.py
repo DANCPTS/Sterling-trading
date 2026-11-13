@@ -11,7 +11,7 @@ from typing import Protocol
 
 from sterling.research.fx.grok_forward import ProposalLog
 from sterling.research.grok.providers import ProviderEnvelope
-from sterling.research.grok.schema import InstrumentQuote, MarketSnapshot, PaperPosition
+from sterling.research.grok.schema import InstrumentQuote, MarketSnapshot, PaperPosition, estimate_tokens
 from sterling.research.grok.timekeeping import week_key
 from sterling.research.invest.book import Book, _probe_nav, derived_actions, weights_of
 from sterling.research.invest.identity import EXECUTION_PERMISSION, INVEST_V2
@@ -54,6 +54,10 @@ def run_invest_week(
         before_call()
     snapshot = _snapshot(book, prices, as_of)
     envelope = provider.complete(snapshot, prompt=prompt)
+    if usage is None:
+        recorded = getattr(provider, "last_usage", None)
+        if isinstance(recorded, dict):
+            usage = recorded
     parsed = parse_allocation(envelope.raw_response)
     current = weights_of(book, prices, as_of.date()) or {name: ZERO for name in (*FUNDS, CASH)}
     if isinstance(parsed, AllocationFailure):
@@ -80,6 +84,9 @@ def run_invest_week(
         "experiment": INVEST_V2.experiment,
         "gate": gate,
         "mode": mode,
+        "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        "prompt_text": prompt,
+        "prompt_token_estimate": estimate_tokens(prompt),
         "reasons": [reason],
         "recorded_at": as_of.isoformat(),
         "system": INVEST_V2.system,
