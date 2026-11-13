@@ -27,8 +27,22 @@ ENV_KEY = "XAI_API_KEY"
 # retried. Only a connection refusal before the request is sent may be
 # retried, and that attempt is not counted as a sent request.
 MAX_CONTENT_CHARS = 20000
-INPUT_USD_PER_MILLION = Decimal("5")
-OUTPUT_USD_PER_MILLION = Decimal("25")
+# Official grok-4.3 rates, verified 13 Nov 2026:
+# https://docs.x.ai/developers/models/grok-4.3
+# https://docs.x.ai/developers/pricing
+# Short context is below 200k tokens. Long context is that size or above.
+# A US regional endpoint multiplies the rate by 1.1. api.x.ai does not.
+SHORT_CONTEXT_TOKENS = 200_000
+INPUT_USD_PER_MILLION = Decimal("1.25")
+CACHED_INPUT_USD_PER_MILLION = Decimal("0.20")
+OUTPUT_USD_PER_MILLION = Decimal("2.50")
+LONG_INPUT_USD_PER_MILLION = Decimal("2.50")
+LONG_CACHED_INPUT_USD_PER_MILLION = Decimal("0.40")
+LONG_OUTPUT_USD_PER_MILLION = Decimal("5.00")
+US_REGIONAL_ENDPOINT_MULTIPLIER = Decimal("1.1")
+PILOT_COST_CEILING_USD = Decimal("0.25")
+PRICE_VERIFIED_ON = "2026-11-13"
+RETRIES_AFTER_SEND = 0
 _TICKS = Decimal("100000000")
 
 PROPOSAL_SCHEMA: dict[str, object] = {
@@ -105,7 +119,10 @@ class UsageRecord:
     cost_in_usd_ticks: int | None
     latency_ms: int
     http_status: int
-    local_estimate_note: str = "pre-send local ceiling, not an xAI invoice"
+    local_estimate_note: str = (
+        "pre-call estimate using uncached grok-4.3 rates. Reasoning tokens and the "
+        "provider invoice can exceed it. A US regional endpoint is 1.1x and is not included."
+    )
     provider_limit_note: str = (
         "max_completion_tokens caps visible output only. Reasoning tokens are billed separately "
         "and are not inside that cap. A prepaid balance and a $0 invoiced limit are account settings."
@@ -189,7 +206,7 @@ class XaiClient:
         max_calls: int = 1,
         max_estimated_tokens: int = 8000,
         output_token_budget: int = 1500,
-        cost_ceiling_usd: Decimal = Decimal("1.00"),
+        cost_ceiling_usd: Decimal = PILOT_COST_CEILING_USD,
         connect_timeout: float = 10.0,
         read_timeout: float = 60.0,
         max_attempts: int = 3,
@@ -238,9 +255,40 @@ class XaiClient:
         }
 
     def estimated_cost_usd(self, prompt: str) -> Decimal:
+        return pre_call_cost_usd(_token_estimate(prompt), self.output_token_budget)
+
+    def dry_run_report(self, prompt: str, *, schema: Mapping[str, object] | None = None) -> dict[str, object]:
+        """The request that would be sent. No socket is opened and no key is read."""
+        request = self.build_request(prompt, schema=schema)
         prompt_tokens = _token_estimate(prompt)
-        total = Decimal(prompt_tokens) * INPUT_USD_PER_MILLION + Decimal(self.output_token_budget) * OUTPUT_USD_PER_MILLION
-        return total / Decimal(1_000_000)
+        estimate = pre_call_cost_usd(prompt_tokens, self.output_token_budget)
+        long_context = prompt_tokens >= SHORT_CONTEXT_TOKENS
+        return {
+            "cost_ceiling_usd": format(self.cost_ceiling_usd, "f"),
+            "endpoint": API_URL,
+            "headers": {
+                "Authorization": "Bearer [redacted]",
+                "Content-Type": "application/json",
+                "User-Agent": "SterlingResearch/1.0",
+            },
+            "long_context": long_context,
+            "max_calls": self.max_calls,
+            "max_estimated_tokens": self.max_estimated_tokens,
+            "model": self.model,
+            "output_token_budget": self.output_token_budget,
+            "payload": request,
+            "pre_call_cost_estimate_usd": format(estimate, "f"),
+            "price_cached_input_usd_per_million": format(
+                LONG_CACHED_INPUT_USD_PER_MILLION if long_context else CACHED_INPUT_USD_PER_MILLION, "f"
+            ),
+            "price_input_usd_per_million": format(LONG_INPUT_USD_PER_MILLION if long_context else INPUT_USD_PER_MILLION, "f"),
+            "price_output_usd_per_million": format(LONG_OUTPUT_USD_PER_MILLION if long_context else OUTPUT_USD_PER_MILLION, "f"),
+            "prompt": prompt,
+            "retries_after_send": RETRIES_AFTER_SEND,
+            "sent": False,
+            "token_estimate": prompt_tokens,
+            "within_ceiling": estimate <= self.cost_ceiling_usd,
+        }
 
     def complete(self, prompt: str, *, schema: Mapping[str, object] | None = None) -> tuple[str, UsageRecord]:
         key = os.environ.get(ENV_KEY) or ""
@@ -388,6 +436,49 @@ def _int_field(value: object) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     return value
+
+
+def pre_call_cost_usd(prompt_tokens: int, output_tokens: int) -> Decimal:
+    """Uncached grok-4.3 estimate. Reasoning tokens are not included."""
+    long_context = prompt_tokens >= SHORT_CONTEXT_TOKENS
+    input_rate = LONG_INPUT_USD_PER_MILLION if long_context else INPUT_USD_PER_MILLION
+    output_rate = LONG_OUTPUT_USD_PER_MILLION if long_context else OUTPUT_USD_PER_MILLION
+    total = Decimal(prompt_tokens) * input_rate + Decimal(output_tokens) * output_rate
+    return total / Decimal(1_000_000)
+
+
+def format_dry_run_report(report: Mapping[str, object]) -> str:
+    """Plain-text dry run. Header values are already redacted."""
+    long_context = report.get("long_context") is True
+    tier = "long (>=200000 tokens)" if long_context else "short (<200000 tokens)"
+    payload = json.dumps(report.get("payload"), sort_keys=True, separators=(",", ":"))
+    lines = [
+        "dry_run: true",
+        "sent: false",
+        f"model: {report.get('model')}",
+        f"endpoint: {report.get('endpoint')}",
+        "headers: Authorization: Bearer [redacted]; Content-Type: application/json; User-Agent: SterlingResearch/1.0",
+        f"max_calls: {report.get('max_calls')}",
+        f"max_estimated_tokens: {report.get('max_estimated_tokens')}",
+        f"retries_after_send: {report.get('retries_after_send')}",
+        f"token_estimate: {report.get('token_estimate')}",
+        f"output_token_budget: {report.get('output_token_budget')}",
+        f"context_tier: {tier}",
+        f"price_input_usd_per_million: {report.get('price_input_usd_per_million')}",
+        f"price_cached_input_usd_per_million: {report.get('price_cached_input_usd_per_million')}",
+        f"price_output_usd_per_million: {report.get('price_output_usd_per_million')}",
+        "long_context_prices_usd_per_million: input 2.50; cached input 0.40; output 5.00",
+        "us_regional_endpoint_multiplier: 1.1 (not applied to api.x.ai)",
+        "cached_input_in_pre_call_estimate: false",
+        "billing_note: reasoning tokens and the provider invoice can exceed this pre-call estimate",
+        f"price_verified_on: {PRICE_VERIFIED_ON}",
+        "price_source: https://docs.x.ai/developers/models/grok-4.3 ; https://docs.x.ai/developers/pricing",
+        f"pre_call_cost_estimate_usd: {report.get('pre_call_cost_estimate_usd')}",
+        f"cost_ceiling_usd: {report.get('cost_ceiling_usd')}",
+        f"within_ceiling: {'true' if report.get('within_ceiling') is True else 'false'}",
+        f"payload: {payload}",
+    ]
+    return "\n".join(lines)
 
 
 def _token_estimate(text: str) -> int:

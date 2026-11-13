@@ -8,7 +8,11 @@ from sterling.research.invest.schema import ALLOCATION_SCHEMA
 
 
 class LiveAllocationAdapter:
-    """One chat completion. The prompt is not rebuilt or shortened here."""
+    """One chat completion. The prompt is not rebuilt or shortened here.
+
+    The envelope model is the configured client model. A ``model_id`` written
+    in the JSON body is not copied here, and a mismatch fails closed later.
+    """
 
     def __init__(self, client: object) -> None:
         self._client = client

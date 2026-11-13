@@ -4,16 +4,15 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from decimal import Decimal
 
-from sterling.research.invest.book import Book, weights_of
-from sterling.research.invest.registration import NO_TRADE_BAND, STARTING_CASH_GBP, SUM_TOLERANCE
+from sterling.research.invest.book import Book
+from sterling.research.invest.registration import NO_TRADE_BAND, SUM_TOLERANCE
 from sterling.research.invest.schema import ALLOCATION_SCHEMA, CASH, FUNDS
-from sterling.research.money import ZERO, quantize_money
+from sterling.research.invest.snapshot import Print, build_invest_snapshot
 
-Print = tuple[str, date, Decimal, datetime]
-STALE_SESSIONS = 5
+PROMPT_VERSION = "paper-v2-allocation-2026-11-13"
 
 
 def allocation_prompt(
@@ -22,74 +21,40 @@ def allocation_prompt(
     prints: Sequence[Print],
     as_of: datetime,
     tradable: set[str],
+    sonia: Sequence[tuple[date, Decimal]] = (),
 ) -> str:
     """JSON the weekly job sends. Prints available after ``as_of`` are omitted."""
-    visible = [item for item in prints if item[0] in FUNDS and item[3] <= as_of]
-    latest: dict[str, Print] = {}
-    for item in visible:
-        current = latest.get(item[0])
-        if current is None or item[1] >= current[1]:
-            latest[item[0]] = item
-    prices = {ticker: item[2] for ticker, item in latest.items()}
-    weights = weights_of(book, prices, as_of.date()) or {name: ZERO for name in (*FUNDS, CASH)}
-    nav = _nav(book, prices)
-    holdings = []
-    for ticker in FUNDS:
-        quote = latest.get(ticker)
-        quantity = book.quantity(ticker)
-        if quote is None:
-            holdings.append(
-                {
-                    "as_of": None,
-                    "instrument_id": ticker,
-                    "price_gbp": None,
-                    "session": None,
-                    "staleness": "missing",
-                    "tradable": ticker in tradable,
-                    "units": format(quantity, "f"),
-                    "value_gbp": None,
-                    "weight": format(weights.get(ticker, ZERO), "f"),
-                }
-            )
-            continue
-        _, session, price, available = quote
-        age = _weekdays(session, as_of.date())
-        holdings.append(
-            {
-                "as_of": available.isoformat(),
-                "instrument_id": ticker,
-                "price_gbp": format(price, "f"),
-                "session": session.isoformat(),
-                "staleness": "fresh" if age == 0 else "stale",
-                "tradable": ticker in tradable and age <= STALE_SESSIONS,
-                "units": format(quantity, "f"),
-                "value_gbp": format(quantize_money(quantity * price), "f"),
-                "weight": format(weights.get(ticker, ZERO), "f"),
-            }
-        )
+    snapshot = build_invest_snapshot(
+        book=book,
+        prints=prints,
+        as_of=as_of,
+        requested_tradable=tradable,
+        sonia=sonia,
+    )
     document = {
-        "as_of": as_of.isoformat(),
+        "as_of": snapshot["as_of"],
         "constraints": {
             "cash_name": CASH,
+            "change_justification": "why the book should change, or why it should not",
             "confidence": "decimal string from 0 to 1",
-            "do_not_send": ["action", "planned_risk", "size", "any hash field"],
+            "decision": "ALLOCATE, HOLD, or NO_TRADE",
+            "do_not_send": ["planned_risk", "size", "any hash field"],
+            "identified_risks": "one or more short strings",
+            "model_id": "the configured model name, not a different model",
             "no_trade_band": format(NO_TRADE_BAND, "f"),
+            "portfolio_reasoning": "one portfolio-level explanation",
             "sum_tolerance": format(SUM_TOLERANCE, "f"),
             "weight": "one decimal string per fund and cash, each from 0 to 1, summing to 1 within the tolerance",
         },
         "instruction": (
-            "Return only the allocation JSON. Use prices whose as_of is at or before the decision time. "
-            "A missing or stale fund has no fresh price. Do not invent hashes."
+            "Return only the allocation JSON. HOLD and NO_TRADE keep the current book. "
+            "Use prices and indicators whose published_at is at or before the decision time. "
+            "A missing or stale fund is not tradable. Do not invent a price, a rate, or a hash. "
+            "model_id must be the configured model."
         ),
-        "market": holdings,
         "output_schema": ALLOCATION_SCHEMA,
-        "portfolio": {
-            "cash_gbp": format(book.cash, "f"),
-            "drawdown": format(book.max_drawdown, "f"),
-            "high_water_gbp": format(book.peak, "f"),
-            "nav_gbp": format(nav, "f"),
-            "pnl_gbp": format(quantize_money(nav - STARTING_CASH_GBP), "f"),
-        },
+        "prompt_version": PROMPT_VERSION,
+        "research_snapshot": snapshot,
         "task": "paper-v2 allocation",
         "universe": list(FUNDS),
     }
@@ -105,24 +70,3 @@ def latest_prices(prints: Sequence[Print], as_of: datetime) -> dict[str, Decimal
         if current is None or session >= current[0]:
             chosen[ticker] = (session, price)
     return {ticker: price for ticker, (_session, price) in chosen.items()}
-
-
-def _nav(book: Book, prices: dict[str, Decimal]) -> Decimal:
-    total = book.cash
-    for ticker in FUNDS:
-        price = prices.get(ticker)
-        if price is not None:
-            total += book.quantity(ticker) * price
-    return quantize_money(total)
-
-
-def _weekdays(start: date, end: date) -> int:
-    if end <= start:
-        return 0
-    count = 0
-    cursor = start
-    while cursor < end:
-        cursor += timedelta(days=1)
-        if cursor.weekday() < 5:
-            count += 1
-    return count
