@@ -1,18 +1,21 @@
 """Retail sterling cash rate from published SONIA, without look-ahead.
 
 The Bank of England series IUDSOIA is the Sterling Overnight Index Average,
-published as an annual percent. Easy-access retail deposits do not pay that
-wholesale rate. The research haircut is half a percentage point, floored at
-zero. It is a disclosed assumption, not a bank quote and not an operational cap.
+published as an annual percent. The Bank publishes that print at 09:00
+Europe/London on the next XLON business day. A valuation may use a print only
+after that time. Easy-access retail deposits do not pay the wholesale rate.
+The research haircut is half a percentage point, floored at zero. It is a
+disclosed assumption, not a bank quote and not an operational cap.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 
+from sterling.research.calendar import LONDON, xlon
 from sterling.research.money import ZERO
 
 SONIA_SERIES = "IUDSOIA"
@@ -32,15 +35,18 @@ class CashRateQuote:
     sonia_percent: Decimal
     haircut_percentage_points: Decimal
     annual_decimal: Decimal
+    available_at: datetime
 
     def as_log(self) -> dict[str, str]:
         return {
             "annual_decimal": format(self.annual_decimal, "f"),
+            "available_at": self.available_at.isoformat(),
             "haircut_percentage_points": format(self.haircut_percentage_points, "f"),
             "published_on": self.published_on.isoformat(),
             "series": self.series,
             "sonia_percent": format(self.sonia_percent, "f"),
             "source": self.source,
+            "status": "accrued",
         }
 
 
@@ -52,20 +58,49 @@ def retail_annual_decimal(sonia_percent: Decimal) -> Decimal:
     return net_percent / Decimal(100)
 
 
-def cash_quote(observations: Sequence[tuple[date, Decimal]], day: date) -> CashRateQuote | None:
-    """Latest SONIA whose date is on or before ``day``. Later prints are ignored."""
-    known = [(published, rate) for published, rate in observations if published <= day]
+def sonia_available_at(reference: date) -> datetime:
+    """09:00 London on the next XLON day. That is when the Bank publishes the print."""
+    calendar = xlon()
+    published = calendar.next_trading_day(reference)
+    return datetime(published.year, published.month, published.day, 9, 0, tzinfo=LONDON)
+
+
+def cash_quote(
+    observations: Sequence[tuple[date, Decimal]],
+    day: date,
+    *,
+    as_of: datetime | None = None,
+) -> CashRateQuote | None:
+    """Latest IUDSOIA that refers to ``day`` or earlier and was already published."""
+    if as_of is None:
+        as_of = datetime.combine(day, time(16, 30), tzinfo=LONDON)
+    known = [
+        (reference, rate, sonia_available_at(reference))
+        for reference, rate in observations
+        if reference <= day and sonia_available_at(reference) <= as_of
+    ]
     if not known:
         return None
-    published, percent = max(known)
+    reference, percent, available = max(known)
     return CashRateQuote(
         series=SONIA_SERIES,
         source=SONIA_SOURCE,
-        published_on=published,
+        published_on=reference,
         sonia_percent=percent,
         haircut_percentage_points=HAIRCUT_PERCENTAGE_POINTS,
         annual_decimal=retail_annual_decimal(percent),
+        available_at=available,
     )
+
+
+def unavailable_rate() -> dict[str, str]:
+    """No accrual. A later session posts the interest once the print exists."""
+    return {
+        "reason": "sonia_not_yet_published",
+        "series": SONIA_SERIES,
+        "source": SONIA_SOURCE,
+        "status": "unavailable",
+    }
 
 
 def parse_sonia_csv(text: str) -> tuple[tuple[date, Decimal], ...]:

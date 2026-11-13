@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from sterling.research.costs import TradeQuote, affordable_buy, quote_trade, research_cost_model
@@ -33,10 +33,12 @@ class Book:
     interest: Decimal = ZERO_MONEY
     trades: int = 0
     pending: dict[str, Decimal] | None = None
+    decided_at: datetime | None = None
     last_price: dict[str, tuple[Decimal, date]] = field(default_factory=dict)
     nav_rows: list[tuple[date, Decimal]] = field(default_factory=list)
     peak: Decimal = STARTING_CASH_GBP
     max_drawdown: Decimal = ZERO
+    accrued_through: date | None = None
 
     def quantity(self, ticker: str) -> Decimal:
         return self.quantities.get(ticker, ZERO)
@@ -105,14 +107,29 @@ def mark(book: Book, prices: dict[str, Decimal], session: date) -> tuple[Decimal
     return nav, labels
 
 
-def weights_of(book: Book, prices: dict[str, Decimal], session: date) -> dict[str, Decimal] | None:
+def _probe_nav(book: Book, prices: dict[str, Decimal], session: date) -> tuple[Decimal, dict[str, str]] | None:
+    """Value the book without keeping the mark on the high-water path.
+
+    Sizing and a decision snapshot call this. The peak and the drawdown stay
+    where the last committed daily close left them, including when the probe
+    raises.
+    """
+    peak, drawdown = book.peak, book.max_drawdown
     before = len(book.nav_rows)
-    marked = mark(book, prices, session)
+    try:
+        return mark(book, prices, session)
+    finally:
+        if len(book.nav_rows) > before:
+            del book.nav_rows[before:]
+        book.peak = peak
+        book.max_drawdown = drawdown
+
+
+def weights_of(book: Book, prices: dict[str, Decimal], session: date) -> dict[str, Decimal] | None:
+    marked = _probe_nav(book, prices, session)
     if marked is None:
         return None
     nav, _labels = marked
-    if len(book.nav_rows) > before:
-        book.nav_rows.pop()
     weights = {CASH: book.cash / nav}
     for ticker in FUNDS:
         quantity = book.quantity(ticker)
@@ -132,11 +149,10 @@ def apply_targets(
     current = weights_of(book, prices, session)
     if current is None:
         return []
-    valued = mark(book, prices, session)
+    valued = _probe_nav(book, prices, session)
     if valued is None:
         return []
     nav = valued[0]
-    book.nav_rows.pop()
     adjusted = _lock_unpriced(targets, current, tradable)
     model = research_cost_model(session)
     fills: list[dict[str, str]] = []

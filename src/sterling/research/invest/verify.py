@@ -19,6 +19,7 @@ def verify_invest(records: Sequence[Mapping[str, object]], *, lane: str) -> None
             raise ResearchError("paper-v2 record issued execution permission")
     _unique(records, "valuation")
     _unique(records, "cash_interest")
+    _unique(records, "interest_pending")
     _unique_fills(records)
 
 

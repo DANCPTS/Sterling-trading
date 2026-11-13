@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -10,6 +11,8 @@ from pathlib import Path
 
 from sterling.research.invest.cash_rate import parse_sonia_csv
 from sterling.research.invest.daily import OPEN_SOURCE_LIVE, run_daily
+from sterling.research.invest.lanes import assert_lane
+from sterling.research.invest.market import select_market
 from sterling.research.invest.schema import FUNDS
 
 
@@ -26,12 +29,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--opens", default="")
     parser.add_argument("--closes", default="")
     parsed = parser.parse_args(args)
+    lane = os.environ.get("STERLING_EVIDENCE_LANE", "").strip()
+    if lane:
+        try:
+            assert_lane(parsed.log, lane)
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
     session = date.fromisoformat(parsed.session)
+    as_of = datetime.now(UTC)
     sonia = parse_sonia_csv(parsed.sonia_csv.read_text(encoding="utf-8")) if parsed.sonia_csv else ()
     opens = _pairs(parsed.opens)
     history = {name: _series(parsed.closes, name) for name in FUNDS}
+    notes = None
     if parsed.label == "live" and not opens:
-        opens, history = _live(session)
+        opens, history, sonia, notes = _live(session, as_of)
         source = OPEN_SOURCE_LIVE
     else:
         source = "SYNTHETIC-open" if parsed.label.upper() == "SYNTHETIC" else OPEN_SOURCE_LIVE
@@ -41,9 +53,10 @@ def main(argv: list[str] | None = None) -> int:
         opens=opens,
         close_history=history,
         sonia=sonia,
-        recorded_at=datetime.now(UTC),
+        recorded_at=as_of,
         open_source=source,
         data_label=parsed.label,
+        cross_check=notes,
     )
     print(f"daily status={result['status']} session={result['session']} provider_calls={result['provider_calls']}")
     return 0
@@ -70,8 +83,7 @@ def _series(text: str, name: str) -> tuple[tuple[date, Decimal], ...]:
     return tuple(rows)
 
 
-def _live(session: date) -> tuple[dict[str, Decimal], dict[str, tuple[tuple[date, Decimal], ...]]]:
-    """Yahoo daily opens and closes. A missing open is omitted, not replaced."""
+def _weekly():
     import importlib.util
 
     path = Path(__file__).resolve().parent / "run_weekly_decision.py"
@@ -80,13 +92,36 @@ def _live(session: date) -> tuple[dict[str, Decimal], dict[str, tuple[tuple[date
         raise RuntimeError("price loader is missing")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    _primary, _secondary, opens = module._live_inputs(Path("evidence"))
-    live_opens: dict[str, Decimal] = {}
-    for ticker, price, day, _at, source in opens:
-        if day == session.isoformat() and source == "yahoo-open":
-            live_opens[ticker] = Decimal(price)
-    history: dict[str, tuple[tuple[date, Decimal], ...]] = {name: () for name in FUNDS}
-    return live_opens, history
+    return module
+
+
+def _live(session: date, as_of: datetime):
+    """Yahoo GBP closes and opens, plus published IUDSOIA. No synthetic fill-in."""
+    module = _weekly()
+    cache = Path("evidence")
+    module.fetch_boe_sonia(cache / "boe_sonia.csv")
+    sonia = parse_sonia_csv((cache / "boe_sonia.csv").read_text(encoding="utf-8"))
+    primary, secondary, opens = module._live_inputs(cache)
+    close_rows = []
+    for item in primary:
+        if item.instrument_id in FUNDS:
+            close_rows.append((item.instrument_id, item.session, item.price, item.published_at))
+    open_rows = []
+    for ticker, price, day, at, source in opens:
+        if source == "yahoo-open" and ticker in FUNDS:
+            open_rows.append((ticker, date.fromisoformat(day), Decimal(price), datetime.fromisoformat(at)))
+    second = []
+    for item in secondary:
+        if item.instrument_id in FUNDS:
+            second.append((item.instrument_id, item.session, item.source))
+    live_opens, history, notes = select_market(
+        closes=close_rows,
+        opens=open_rows,
+        second_sources=second,
+        session=session,
+        as_of=as_of,
+    )
+    return live_opens, history, sonia, notes
 
 
 if __name__ == "__main__":

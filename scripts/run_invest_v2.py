@@ -14,6 +14,7 @@ from sterling.research.grok.providers import MockGrokProvider, ProviderEnvelope
 from sterling.research.invest.book import Book
 from sterling.research.invest.daily import load_book
 from sterling.research.invest.decide import run_invest_week
+from sterling.research.invest.lanes import assert_lane
 from sterling.research.invest.schema import ALLOCATION_SCHEMA, FUNDS
 
 
@@ -28,10 +29,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--simulated-clock", action="store_true")
     parser.add_argument("--as-of", type=str)
     args = parser.parse_args(argv)
+    lane = os.environ.get("STERLING_EVIDENCE_LANE", "").strip()
+    if lane:
+        try:
+            assert_lane(args.log, lane)
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
     os.environ.setdefault("STERLING_SYSTEM", "sterling-invest")
     os.environ.setdefault("STERLING_EXPERIMENT", "paper-v2")
     as_of = datetime.now(UTC) if args.as_of is None else datetime.fromisoformat(args.as_of)
-    if args.fixture or args.as_of:
+    if args.provider == "mock" or args.fixture or args.as_of:
         prices = {name: Decimal("100") for name in FUNDS}
         mode = "simulated_clock"
     else:
