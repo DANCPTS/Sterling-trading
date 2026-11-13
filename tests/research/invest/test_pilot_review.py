@@ -258,6 +258,69 @@ def test_cache_dry_run_does_not_call_or_write_evidence(
     (tmp_path / "dry-run.txt").write_text(text, encoding="utf-8")
 
 
+def test_failed_provider_reports_nav_without_using_cash(tmp_path: Path, stamped: None) -> None:
+    del stamped
+    book = Book()
+    book.cash = Decimal("5000.00")
+    book.quantities["VWRP"] = Decimal("40")
+    book.peak = Decimal("10000.00")
+    book.max_drawdown = Decimal("0.02")
+    book.nav_rows.append((date(2026, 11, 1), Decimal("10000.00")))
+    declare_distribution(book, "VWRP", Decimal("50.00"), date(2026, 11, 20))
+    before = (book.peak, book.max_drawdown, list(book.nav_rows), book.cash)
+    valued = _run_error(tmp_path / "valued-nav.jsonl", XaiError("xAI HTTP 500. upstream"), book)
+    assert valued["result"]["nav_status"] == "valued"
+    assert valued["result"]["nav_gbp"] == "9050.00"
+    assert valued["result"]["nav_gbp"] != format(book.cash, "f")
+    assert (book.peak, book.max_drawdown, list(book.nav_rows), book.cash) == before
+    failure = _failure(valued["log"])
+    assert failure["nav_gbp"] == "9050.00"
+    assert failure["nav_status"] == "valued"
+    blind = Book()
+    blind.cash = Decimal("5000.00")
+    blind.quantities["VWRP"] = Decimal("40")
+    blind.peak = Decimal("11111.00")
+    missing = _run_error(
+        tmp_path / "missing-nav.jsonl",
+        XaiError("xAI HTTP 500. upstream"),
+        blind,
+        prices={name: Decimal("100") for name in FUNDS if name != "VWRP"},
+    )
+    assert missing["result"]["nav_status"] == "unavailable"
+    assert missing["result"]["nav_gbp"] is None
+    assert missing["result"]["nav_gbp"] != format(blind.cash, "f")
+    assert _failure(missing["log"])["nav_status"] == "unavailable"
+    assert blind.peak == Decimal("11111.00")
+
+
+def test_xai_refuses_synthetic_fixtures(
+    tmp_path: Path, stamped: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    del stamped
+    calls: list[str] = []
+
+    def _blocked(*_args: object, **_kwargs: object) -> None:
+        calls.append("xai")
+        raise AssertionError("xai")
+
+    monkeypatch.setattr("sterling.xai_client.XaiClient.__init__", _blocked)
+    monkeypatch.setattr("sterling.xai_client.XaiClient.complete", _blocked)
+    monkeypatch.setattr("sterling.xai_client.HttpsTransport.post", _blocked)
+    monkeypatch.setattr("urllib.request.urlopen", _blocked)
+    monkeypatch.setenv("XAI_API_KEY", "not-a-real-key")
+    with_as_of = tmp_path / "with" / "evidence" / "invest-v2" / "mock" / "forward.jsonl"
+    assert main(["--log", str(with_as_of), "--provider", "xai", "--enable-xai", "--fixture", "--as-of", WHEN.isoformat()]) == 2
+    assert "No request was sent" in capsys.readouterr().err
+    plain = tmp_path / "plain" / "evidence" / "invest-v2" / "mock" / "forward.jsonl"
+    assert main(["--log", str(plain), "--provider", "xai", "--enable-xai", "--fixture"]) == 2
+    fallback = tmp_path / "fallback" / "evidence" / "invest-v2" / "mock" / "forward.jsonl"
+    assert main(["--log", str(fallback), "--provider", "xai", "--enable-xai", "--as-of", WHEN.isoformat()]) == 2
+    assert calls == []
+    assert not with_as_of.exists()
+    assert not plain.exists()
+    assert not fallback.exists()
+
+
 def test_provider_failures_are_audited_and_do_not_trade_again(tmp_path: Path, stamped: None) -> None:
     del stamped
     book = Book()
@@ -365,12 +428,17 @@ def _run(
     return {"book": held, "log": log, "result": result}
 
 
-def _run_error(log: Path, exc: Exception, book: Book | None = None) -> dict[str, object]:
+def _run_error(
+    log: Path,
+    exc: Exception,
+    book: Book | None = None,
+    prices: dict[str, Decimal] | None = None,
+) -> dict[str, object]:
     held = Book() if book is None else book
     result = run_invest_week(
         log_path=log,
         book=held,
-        prices={name: Decimal("100") for name in FUNDS},
+        prices={name: Decimal("100") for name in FUNDS} if prices is None else prices,
         tradable=set(FUNDS),
         as_of=WHEN,
         provider=_Boom(exc),

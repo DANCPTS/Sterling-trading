@@ -87,6 +87,9 @@ def main(argv: list[str] | None = None) -> int:
         snapshot=research,
         provenance=provenance,
     )
+    if args.provider == "xai" and provenance == "synthetic-fixture":
+        print("refusing a paid xAI call on synthetic-fixture prices. No request was sent.", file=sys.stderr)
+        return 2
     if args.dry_run:
         report = XaiClient(enabled=False, dry_run=True, model="grok-4.3").dry_run_report(prompt, schema=ALLOCATION_SCHEMA)
         report["data_source"] = provenance

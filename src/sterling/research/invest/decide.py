@@ -69,6 +69,17 @@ def run_invest_week(
     current = _current_weights(valued)
     nav = None if valued is None else valued["nav"]
     market = _market_snapshot(book, point_prices, research, as_of)
+    if _blocks_paid_synthetic(provider, research):
+        return _fail_provider(
+            log,
+            book,
+            point_prices,
+            as_of,
+            mode,
+            week,
+            _SyntheticXaiRefusal("synthetic-fixture prices cannot be sent to xAI. No request was sent."),
+            usage,
+        )
     calls = 0
     envelope: ProviderEnvelope | None = None
     try:
@@ -83,7 +94,7 @@ def run_invest_week(
                     usage = recorded
             parsed = parse_allocation(envelope.raw_response, expected_model_id=envelope.model_id)
     except Exception as exc:
-        return _fail_provider(log, book, as_of, mode, week, exc, usage)
+        return _fail_provider(log, book, point_prices, as_of, mode, week, exc, usage)
     reply = "" if envelope is None else envelope.raw_response
     gate, reasons, targets, confidence, actions, raw = _disposition(
         parsed,
@@ -292,9 +303,37 @@ def _failure_body(week: str, kind: str, message: str, sent_state: str) -> dict[s
     }
 
 
+class _SyntheticXaiRefusal(Exception):
+    """A paid call was stopped before the client ran. Nothing was sent."""
+
+    sent_state = "definitely_not_sent"
+
+
+def _blocks_paid_synthetic(provider: object, research: dict[str, object]) -> bool:
+    """Stop the real xAI client before it can send fixture prices."""
+    if type(provider).__name__ != "LiveAllocationAdapter":
+        return False
+    client = getattr(provider, "_client", None)
+    if type(client).__name__ != "XaiClient":
+        return False
+    availability = research.get("data_availability")
+    if not isinstance(availability, dict):
+        return True
+    return str(availability.get("publication") or "") == "synthetic"
+
+
+def _nav_report(book: Book, prices: dict[str, Decimal]) -> tuple[str | None, str]:
+    """Authoritative NAV, or an explicit gap when a holding cannot be valued."""
+    valued = valuation_of(book, prices)
+    if valued is None:
+        return None, "unavailable"
+    return format(valued["nav"], "f"), "valued"
+
+
 def _fail_provider(
     log: ProposalLog,
     book: Book,
+    prices: dict[str, Decimal],
     as_of: datetime,
     mode: str,
     week: str,
@@ -311,7 +350,13 @@ def _fail_provider(
         logged = recorded if isinstance(recorded, dict) else None
     if logged:
         moment = _append(log, moment, "model_usage", logged)
-    _append(log, moment, "provider_failure", _failure_body(week, type(exc).__name__, message, sent_state))
+    nav_gbp, nav_status = _nav_report(book, prices)
+    _append(
+        log,
+        moment,
+        "provider_failure",
+        {**_failure_body(week, type(exc).__name__, message, sent_state), "nav_gbp": nav_gbp, "nav_status": nav_status},
+    )
     _append(
         log,
         moment,
@@ -322,7 +367,8 @@ def _fail_provider(
     return {
         "execution_permission": EXECUTION_PERMISSION,
         "gate": "hold",
-        "nav_gbp": format(book.cash, "f"),
+        "nav_gbp": nav_gbp,
+        "nav_status": nav_status,
         "provider_calls": calls,
         "sent_state": sent_state,
         "status": "failed",
