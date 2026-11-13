@@ -300,11 +300,8 @@ def _note_line(note: str) -> str:
 def _data_banner(label: str, lane: str) -> str:
     if "SYNTHETIC" in label.upper():
         return "DATA LABEL: SYNTHETIC. SYNTHETIC fixture. Not a market print. Read only. This page cannot place an order."
-    book = "MOCK / PAPER" if lane == "mock" else "GENUINE PAPER"
-    return (
-        "Price inputs: Yahoo market prices (delayed, not exchange-verified) "
-        f"used for {book} trading. Read only. This page cannot place an order."
-    )
+    del lane
+    return "Yahoo market-price inputs — delayed and not exchange-verified. Read only. This page cannot place an order."
 
 
 def _shown_return(latest: Mapping[str, object], start: Decimal | None, nav: object) -> object:
@@ -492,8 +489,7 @@ def _price_as_of(info: object, session: str) -> str:
     if not isinstance(info, dict):
         return "as-of not recorded; not real-time"
     when = str(info.get("last_good") or session or "unknown session")
-    status = str(info.get("status") or "unlabelled")
-    return f"as of {when} session close, not real-time ({status})"
+    return f"{when}, not real-time"
 
 
 def _decisions(records: Sequence[Mapping[str, object]]) -> str:

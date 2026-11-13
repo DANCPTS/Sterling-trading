@@ -120,7 +120,8 @@ def test_old_mock_page_shows_stored_and_daily_close_figures() -> None:
     assert "£8.57" in html
     assert "£0.95" in html
     assert html.count(">BUY<") == 6
-    assert "as of 2026-11-12 session close, not real-time (fresh)" in html
+    assert "2026-11-12, not real-time" in html
+    assert "fresh" not in html
     assert "Awaiting session" in html
     assert "DATA LABEL: live" not in html
 
@@ -137,11 +138,11 @@ def test_mixed_legacy_and_corrected_sessions_do_not_look_like_a_falling_peak() -
     text = " ".join(notes)
     assert "High water on 2026-11-13 fell." not in text
     assert "fell below the earlier maximum" not in text
-    assert "immutable legacy evidence" in text
+    assert text.lower().count("legacy accounting discrepancy") == 1
+    assert "provisional sizing mark" in text
     assert "0.4486%" in text
     assert "0.5242%" in text
-    assert "not a falling high water" in text
-    assert "not a shrinking maximum drawdown" in text
+    assert "not an error just because it differs from this legacy peak" in text
     assert "0.52%" in html
     assert "£9,947.58" in html
     fresh = (
@@ -151,16 +152,63 @@ def test_mixed_legacy_and_corrected_sessions_do_not_look_like_a_falling_peak() -
     )
     fresh_notes = " ".join(ledger_warnings(fresh))
     assert "fell" not in fresh_notes
-    assert "immutable legacy evidence" not in fresh_notes
+    assert "Legacy accounting discrepancy" not in fresh_notes
     broken = (
         _identity("decision", gate="accepted", cash_gbp="10000.00", derived_actions={}),
         _close("2026-11-12", "11000.00", "1000.00", "0", "11000.00"),
         _close("2026-11-13", "10500.00", "-500.00", "0", "10000.00"),
     )
     broken_notes = " ".join(ledger_warnings(broken))
-    assert "Stored high water fell from £11,000.00 on 2026-11-12 to £10,000.00 on 2026-11-13" in broken_notes
-    assert "not the old provisional peak" in broken_notes
-    assert "immutable legacy evidence" not in broken_notes
+    assert "Stored high water on 2026-11-13 is £10,000.00" in broken_notes
+    assert "disagrees with that reconstruction" in broken_notes
+    assert "Legacy accounting discrepancy" not in broken_notes
+
+
+def test_second_session_fixture_shows_the_published_totals() -> None:
+    """Economics published for 13 Nov. This is not the private 22-row log."""
+    records = _second_session()
+    html = render_dashboard(records)
+    notes = " ".join(ledger_warnings(records))
+    assert "£10,000.00" in html
+    assert "£9,947.58" in html
+    assert "-£7.56" in html
+    assert "-£52.42" in html
+    assert "0.52%" in html
+    assert "0.5242%" in notes
+    assert "0.4486%" in notes
+    assert "£1,428.55" in html
+    assert "£8.57" in html
+    assert "£1.09" in html
+    assert "-£53.51" in html
+    assert html.count(">BUY<") == 6
+    assert ">SELL<" not in html
+    assert notes.lower().count("legacy accounting discrepancy") == 1
+    assert "provisional sizing mark" in notes
+    assert "High water on 2026-11-13 fell." not in notes
+    assert "fell below the earlier maximum" not in notes
+    assert "reconstructed from older evidence -0.0904%" in html
+    assert "reconstructed from older evidence +0.0095%" in html
+    assert "older than the latest valuation 2026-11-13" in notes
+
+
+def test_later_sessions_follow_the_reconstruction_not_the_legacy_peak() -> None:
+    good = _path_after_the_legacy_mark(correct=True)
+    notes = " ".join(ledger_warnings(good))
+    assert notes.lower().count("legacy accounting discrepancy") == 1
+    assert "disagrees with that reconstruction" not in notes
+    assert "fell below the earlier maximum" not in notes
+    wrong_peak = _path_after_the_legacy_mark(correct=True)
+    valuations = [record for record in wrong_peak if record["record_type"] == "valuation"]
+    valuations[-2]["high_water_gbp"] = "10000.00"
+    flagged = " ".join(ledger_warnings(wrong_peak))
+    assert "Stored high water on 2026-11-17 is £10,000.00" in flagged
+    assert "disagrees with that reconstruction" in flagged
+    wrong_drawdown = _path_after_the_legacy_mark(correct=True)
+    last = [record for record in wrong_drawdown if record["record_type"] == "valuation"][-1]
+    last["drawdown"] = format((Decimal("10100.00") - Decimal("10080.00")) / Decimal("10100.00"), "f")
+    drawdown_notes = " ".join(ledger_warnings(wrong_drawdown))
+    assert "Stored max drawdown on 2026-11-18" in drawdown_notes
+    assert "cumulative maximum, not the single-day gap" in drawdown_notes
 
 
 def test_benchmark_edges_are_labelled_and_do_not_replace_a_reconciled_row() -> None:
@@ -337,18 +385,85 @@ def _multi_session() -> tuple[dict[str, object], ...]:
     )
 
 
-def _close(session: str, nav: str, daily: str, drawdown: str, water: str) -> dict[str, object]:
+def _second_session() -> tuple[dict[str, object], ...]:
+    prices = ("1419.83", "1419.83", "1419.83", "1419.83", "1419.83", "1419.88")
+    spends = ("-1428.75", "-1428.75", "-1428.75", "-1428.75", "-1428.75", "-1428.79")
+    fills = [
+        _identity(
+            "fill",
+            session="2026-11-12",
+            fund=name,
+            side="BUY",
+            units="1",
+            price_gbp="100.00",
+            cash_delta_gbp=spend,
+        )
+        for name, spend in zip(FUNDS, spends, strict=True)
+    ]
+    return (
+        _identity("decision", gate="accepted", cash_gbp="10000.00", timestamp_utc="2026-11-11T18:00:00+00:00", derived_actions={}),
+        *fills,
+        _identity("cash_interest", session="2026-11-12", status="accrued", amount_gbp="0.95"),
+        _identity("cash_interest", session="2026-11-13", status="accrued", amount_gbp="0.14"),
+        _close("2026-11-12", "9955.14", "-44.86", format(STORED_DRAWDOWN, "f"), "10007.95"),
+        _close("2026-11-13", "9947.58", "-7.56", "0.005242", "10000.00", cash="1428.55", costs="8.57", holdings=prices),
+        _identity(
+            "performance",
+            session="2026-11-12",
+            arms=[
+                _legacy_arm("buy_and_hold_vwrp", Decimal("9990.96")),
+                _legacy_arm("equal_weight", Decimal("9990.96")),
+                _legacy_arm("sixty_forty", Decimal("9990.96")),
+                _legacy_arm("sterling_cash", Decimal("10000.95")),
+            ],
+        ),
+    )
+
+
+def _path_after_the_legacy_mark(*, correct: bool) -> tuple[dict[str, object], ...]:
+    del correct
+    stored = (Decimal("10007.95") - Decimal("9955.14")) / Decimal("10007.95")
+    steps = (
+        ("2026-11-12", "9955.14", "-44.86", format(stored, "f"), "10007.95"),
+        ("2026-11-13", "9947.58", "-7.56", "0.005242", "10000.00"),
+        ("2026-11-16", "10050.00", "102.42", "0.005242", "10050.00"),
+        ("2026-11-17", "10100.00", "50.00", "0.005242", "10100.00"),
+        ("2026-11-18", "10080.00", "-20.00", "0.005242", "10100.00"),
+    )
+    return (
+        _identity("decision", gate="accepted", cash_gbp="10000.00", derived_actions={}),
+        *(_close(*step) for step in steps),
+    )
+
+
+def _close(
+    session: str,
+    nav: str,
+    daily: str,
+    drawdown: str,
+    water: str,
+    cash: str | None = None,
+    costs: str = "0.00",
+    holdings: tuple[str, ...] | None = None,
+) -> dict[str, object]:
+    marked = {name: "1" for name in FUNDS} if holdings else {}
+    prices = (
+        {name: {"price_gbp": price, "last_good": session, "status": "fresh"} for name, price in zip(FUNDS, holdings, strict=True)}
+        if holdings
+        else {}
+    )
     return _identity(
         "valuation",
         session=session,
         nav_gbp=nav,
-        cash_gbp=nav,
+        cash_gbp=cash or nav,
         daily_pnl_gbp=daily,
+        cumulative_costs_gbp=costs,
         cumulative_return=format(Decimal(nav) / Decimal("10000.00") - 1, "f"),
         drawdown=drawdown,
         high_water_gbp=water,
-        holdings={},
-        prices={},
+        holdings=marked,
+        prices=prices,
         data_label="live",
     )
 

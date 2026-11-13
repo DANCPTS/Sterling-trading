@@ -39,7 +39,7 @@ def test_mock_import_flags_the_old_baseline_and_keeps_the_last_page(tmp_path: Pa
     html = page.read_text(encoding="utf-8")
     assert "MOCK / PAPER" in html
     assert "GENUINE PAPER" not in html
-    assert "Yahoo market prices (delayed, not exchange-verified)" in html
+    assert "Yahoo market-price inputs — delayed and not exchange-verified" in html
     assert "SYNTHETIC fixture" not in html
     assert "does not match NAV against starting capital" in html
     assert "2.00%" in html
