@@ -178,7 +178,10 @@ def _high_water_sequence_notes(records: Sequence[Mapping[str, object]]) -> list[
         path.append((session, peak, worst))
         water = _amount(record.get("high_water_gbp"))
         drawdown = _amount(record.get("drawdown"))
-        if water is not None and water > peak + Decimal("0.01"):
+        # Only the first committed close on 12 Nov 2026 is the known provisional peak.
+        # A later inflated high water is a new error, not another copy of that mark.
+        first_session = str(valuations[0].get("session") or "")
+        if session == "2026-11-12" and session == first_session and water is not None and water > peak + Decimal("0.01"):
             legacy.append((session, water, drawdown if drawdown is not None else Decimal(0)))
             continue
         if water is not None and abs(water - peak) > Decimal("0.01"):
@@ -218,7 +221,8 @@ def _legacy_definition_note(
         )
     lines.append(
         f"That path starts at {_gbp_text(start)} and uses only committed closing NAVs. "
-        "A later stored figure is not an error just because it differs from this legacy peak."
+        "A later stored figure is not an error just because it differs from this legacy peak. "
+        "A later row that disagrees with the daily-close reconstruction is still an error."
     )
     return " ".join(lines)
 

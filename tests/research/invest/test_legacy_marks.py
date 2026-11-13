@@ -164,6 +164,40 @@ def test_mixed_legacy_and_corrected_sessions_do_not_look_like_a_falling_peak() -
     assert "Legacy accounting discrepancy" not in broken_notes
 
 
+def test_a_later_inflated_peak_is_not_called_legacy() -> None:
+    day_one = (Decimal("10007.95") - Decimal("9955.14")) / Decimal("10007.95")
+    inflated = (Decimal("15000.00") - Decimal("9900.00")) / Decimal("15000.00")
+    records = (
+        _identity("decision", gate="accepted", cash_gbp="10000.00", derived_actions={}),
+        _close("2026-11-12", "9955.14", "-44.86", format(day_one, "f"), "10007.95"),
+        _close("2026-11-13", "9947.58", "-7.56", "0.005242", "10000.00"),
+        _close("2026-11-14", "9900.00", "-47.58", format(inflated, "f"), "15000.00"),
+    )
+    text = " ".join(ledger_warnings(records))
+    assert "Legacy accounting discrepancy on 2026-11-12" in text
+    assert "Stored high water on 2026-11-14 is £15,000.00" in text
+    assert "disagrees with that reconstruction" in text
+    assert "Stored max drawdown on 2026-11-14" in text
+    legacy, _, later = text.partition("Stored high water on 2026-11-14")
+    assert "£15,000.00" not in legacy
+    too_low = _close("2026-11-16", "10080.00", "180.00", "0.001", "10100.00")
+    too_high = _close("2026-11-16", "10080.00", "180.00", "0.20", "10100.00")
+    base = (
+        _identity("decision", gate="accepted", cash_gbp="10000.00", derived_actions={}),
+        _close("2026-11-12", "9955.14", "-44.86", "0.004486", "10000.00"),
+        _close("2026-11-13", "9947.58", "-7.56", "0.005242", "10000.00"),
+        _close("2026-11-14", "10100.00", "152.42", "0.005242", "10100.00"),
+    )
+    low_notes = " ".join(ledger_warnings((*base, too_low)))
+    high_notes = " ".join(ledger_warnings((*base, too_high)))
+    assert "Stored max drawdown on 2026-11-16" in low_notes
+    assert "Stored max drawdown on 2026-11-16" in high_notes
+    assert "Legacy accounting discrepancy" not in low_notes
+    assert "Legacy accounting discrepancy" not in high_notes
+    assert "cumulative maximum, not the single-day gap" in low_notes
+    assert "cumulative maximum, not the single-day gap" in high_notes
+
+
 def test_second_session_fixture_shows_the_published_totals() -> None:
     """Economics published for 13 Nov. This is not the private 22-row log."""
     records = _second_session()
