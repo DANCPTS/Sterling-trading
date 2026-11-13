@@ -79,6 +79,7 @@ def benchmark_table(
     *,
     sonia: Sequence[tuple[date, Decimal]],
     as_of: datetime | None = None,
+    publications: Mapping[str, Sequence[tuple[date, datetime]]] | None = None,
 ) -> dict[str, object]:
     """Replay frozen rules on the same sessions, costs and SONIA rate.
 
@@ -88,6 +89,7 @@ def benchmark_table(
     that session and trades at the next session. A missing print accrues
     nothing for that day and is not stored as zero.
     """
+    closes = _published(closes, publications, as_of)
     arms = [
         _static("buy_and_hold_vwrp", {"VWRP": Decimal(1)}, closes, sessions, sonia, as_of),
         _static("equal_weight", {name: Decimal(1) / Decimal(len(FUNDS)) for name in FUNDS}, closes, sessions, sonia, as_of),
@@ -99,10 +101,22 @@ def benchmark_table(
     for arm in arms:
         arm["calculation"] = POINT_IN_TIME_CALCULATION
         arm["look_ahead"] = "excluded"
+        _execution(arm)
     document = performance_document(experiment=INVEST_V2, arms=arms)
     document["benchmark_calculation"] = POINT_IN_TIME_CALCULATION
     document["benchmark_status"] = "valid"
+    document["execution_equivalence"] = "not_claimed"
+    document["execution_note"] = (
+        "Static arms enter at the first session close. Dynamic arms decide at a month-end close "
+        "and fill at a later session close. Opens are not in this series, so a close is not used "
+        "as a silent substitute for an open. These conventions are provisional and are not fully "
+        "execution-equivalent to each other or to the paper-v2 next open."
+    )
     document["legacy_benchmark_rule"] = LEGACY_BENCHMARK_RULE
+    document["publication_rule"] = (
+        "A supplied published_at after that session's 16:30 London clock is excluded. "
+        "A close with no publication time is available at that session and not before it."
+    )
     return document
 
 
@@ -185,10 +199,24 @@ def point_in_time_path(
     sessions: Sequence[date],
     sonia: Sequence[tuple[date, Decimal]],
     as_of: datetime | None = None,
+    publications: Mapping[str, Sequence[tuple[date, datetime]]] | None = None,
 ) -> tuple[tuple[date, Decimal, dict[str, str]], ...]:
     """NAV and the decision weights at each session, using only data known then."""
-    _book, rows = _walk_frozen(strategy, closes, sessions, sonia, as_of)
+    book, rows = _walk_frozen(strategy, _published(closes, publications, as_of), sessions, sonia, as_of)
+    del book
     return tuple(rows)
+
+
+def frozen_book(
+    strategy: TrendFilter | DualMomentum,
+    closes: Mapping[str, Sequence[tuple[date, Decimal]]],
+    sessions: Sequence[date],
+    sonia: Sequence[tuple[date, Decimal]],
+    as_of: datetime | None = None,
+) -> Book:
+    """The book after a point-in-time replay. A session with no close is not filled."""
+    book, _rows = _walk_frozen(strategy, closes, sessions, sonia, as_of)
+    return book
 
 
 def _frozen(
@@ -255,6 +283,47 @@ def _targets(
         targets = {ticker: ZERO for ticker in FUNDS}
         targets[CASH] = Decimal(1)
     return targets
+
+
+def _execution(arm: dict[str, object]) -> None:
+    name = str(arm.get("name"))
+    if name in {"etf_trend", "etf_dual_momentum"}:
+        convention = "decide_at_month_end_close_fill_next_session_close"
+        executable = "later_session_close_when_present"
+    elif name == "sterling_cash":
+        convention = "cash_interest_only"
+        executable = "none"
+    else:
+        convention = "enter_at_first_session_close"
+        executable = "first_session_close"
+    arm["cash_interest"] = "SONIA with publication lag, same starting capital"
+    arm["costs"] = "research spread, slippage, and commission; ETF stamp exempt"
+    arm["decision_price"] = "close_on_or_before_the_decision"
+    arm["executable_price"] = executable
+    arm["execution_comparability"] = "provisional_not_fully_execution_equivalent"
+    arm["execution_convention"] = convention
+    arm["open_substitution"] = "none"
+    arm["valuation_calendar"] = "shared_sessions"
+
+
+def _published(
+    closes: Mapping[str, Sequence[tuple[date, Decimal]]],
+    publications: Mapping[str, Sequence[tuple[date, datetime]]] | None,
+    as_of: datetime | None,
+) -> dict[str, tuple[tuple[date, Decimal], ...]]:
+    if not publications:
+        return {ticker: tuple(points) for ticker, points in closes.items()}
+    filtered: dict[str, tuple[tuple[date, Decimal], ...]] = {}
+    for ticker, points in closes.items():
+        available = {day: moment for day, moment in publications.get(ticker, ())}
+        kept: list[tuple[date, Decimal]] = []
+        for day, price in points:
+            moment = available.get(day)
+            if moment is not None and moment > _day_clock(day, as_of):
+                continue
+            kept.append((day, price))
+        filtered[ticker] = tuple(kept)
+    return filtered
 
 
 def _day_clock(day: date, ceiling: datetime | None) -> datetime:

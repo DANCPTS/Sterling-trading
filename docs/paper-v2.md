@@ -18,7 +18,7 @@ Each decision stores the point-in-time research snapshot, `prompt_version` (`pap
 
 The deterministic check sits between the parsed reply and `book.pending`. It uses `research-risk-v0`, which stays `owner_approved: false` and is not an operational trading policy. Concentration, turnover, cash, instrument eligibility, stale or missing prices, and next-open timing are rejected in full when they breach. The pilot does not clip or resize a breaching allocation. The previous clipping helper remains available to the older research simulator and is not the pilot gate.
 
-An offline genuine-lane run replays a recorded or synthetic reply. The log path for that lane still ends in `evidence/invest-v2/forward.jsonl`, and the mock lane still ends in `evidence/invest-v2/mock/forward.jsonl`. Tests use a temporary directory. The script refuses the evidence files inside this repository. `scripts/run_invest_v2.py --dry-run` prints the request it would send and does not open a connection. `--provider recorded --response-file` replays a local file.
+An offline genuine-lane run replays a recorded or synthetic reply. The log path for that lane still ends in `evidence/invest-v2/forward.jsonl`, and the mock lane still ends in `evidence/invest-v2/mock/forward.jsonl`. Tests use a temporary directory. The script refuses the evidence files inside this repository. `scripts/run_invest_v2.py --dry-run --fixture` prints a synthetic request. `--dry-run --cache DIR --as-of TIME` reads a local CSV cache and keeps each row's `published_at`. Neither opens a connection, writes an evidence log, nor places an order. The printed cost is a local pre-send estimate of the full request. It is not a provider invoice cap. `--provider recorded --response-file` replays a local file.
 
 ## grok-4.3 request controls
 
@@ -28,7 +28,7 @@ Official rates checked on 13 Nov 2026, from the grok-4.3 model page and the xAI 
 
 ## Benchmarks and comparison
 
-Valid benchmark rows are marked `benchmark_calculation: point-in-time-v1` and `benchmark_status: valid`. Frozen trend and dual-momentum rules decide at each month-end from closes on or before that session, then trade on the next session. They do not see the sample's last price on the first session. SONIA for a historical day is the print published by 16:30 London that day, and not a print that appears only because the report clock is later.
+Valid benchmark rows are marked `benchmark_calculation: point-in-time-v1` and `benchmark_status: valid`. Frozen trend and dual-momentum rules decide at each month-end from closes on or before that session, then trade at a later session's close. Static arms enter at the first session close. This series has no opens, so a close is not used in place of a missing open, and `execution_equivalence` is `not_claimed`. The arms are provisional and are not fully execution-equivalent to each other or to the paper book's next open. SONIA for a historical day is the print published by 16:30 London that day, and not a print that appears only because the report clock is later. A close with a `published_at` after that session's clock is excluded.
 
 A stored performance row without `point-in-time-v1` is a legacy result. It is left as it was written. It needs recalculation before it is compared with a valid row. The evidence files are not rewritten to replace it.
 

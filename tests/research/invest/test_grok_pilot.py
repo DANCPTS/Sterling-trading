@@ -70,11 +70,10 @@ def test_snapshot_drops_future_prices_and_unpublished_sonia(stamped: None) -> No
     text = json.dumps(base)
     assert "999" not in text
     assert "9.00" not in text
-    assert base["data_availability"] == {
-        "as_of": AS_OF.isoformat(),
-        "invented_observations": "none",
-        "rule": "published_at <= as_of",
-    }
+    assert base["data_availability"]["invented_observations"] == "none"
+    assert base["data_availability"]["rule"] == "published_at <= as_of"
+    assert base["data_availability"]["publication"] == "source-timestamp"
+    assert base["data_availability"]["valuation"] == "complete"
     holdings = {row["instrument_id"]: row for row in base["portfolio"]["holdings"]}
     assert holdings["IGLT"]["staleness"] == "stale"
     assert holdings["IGLT"]["tradable"] == "false"
@@ -317,7 +316,8 @@ def test_dry_run_report_and_no_retry(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "price_output_usd_per_million: 2.50" in text
     assert "input 2.50; cached input 0.40; output 5.00" in text
     assert "us_regional_endpoint_multiplier: 1.1" in text
-    assert "reasoning tokens" in text
+    assert "not a provider billing cap" in text
+    assert "full request JSON" in text
     assert "within_ceiling: true" in text
     assert client.estimated_cost_usd(prompt) <= PILOT_COST_CEILING_USD
     long_estimate = pre_call_cost_usd(200_000, 1500)

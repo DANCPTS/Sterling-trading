@@ -265,10 +265,14 @@ def fail_closed_allocation(
         )
     if abs(gross + cash - 1) > Decimal("0.005") + tolerance:
         reasons.append("rejected: cash weight does not match the residual")
-    for ticker in eligible:
-        if current_book.get(ticker, ZERO) > tolerance and ticker not in priced:
+    for ticker in sorted(eligible):
+        held = current_book.get(ticker, ZERO)
+        if held <= tolerance:
+            continue
+        if ticker not in priced:
             reasons.append(f"rejected: missing_valuation {ticker}")
-            break
+        elif ticker in stale or ticker not in tradable:
+            reasons.append(f"rejected: stale_holding {ticker}")
     for ticker in sorted(eligible):
         gap = abs(instruments.get(ticker, ZERO) - current_book.get(ticker, ZERO))
         if gap <= NO_TRADE_BAND:

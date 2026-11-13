@@ -77,25 +77,36 @@ PROPOSAL_SCHEMA: dict[str, object] = {
 class XaiError(Exception):
     """A call was refused or the provider failed. The message is redacted."""
 
-    def __init__(self, message: str, usage: UsageRecord | None = None) -> None:
+    default_sent_state = "possibly_sent_or_billed"
+
+    def __init__(self, message: str, usage: UsageRecord | None = None, *, sent_state: str | None = None) -> None:
         super().__init__(message)
         self.usage = usage
+        self.sent_state = sent_state if sent_state is not None else type(self).default_sent_state
 
 
 class XaiDisabled(XaiError):
     """The flag or the environment variable was missing."""
 
+    default_sent_state = "definitely_not_sent"
+
 
 class XaiDryRun(XaiError):
     """The request body was built and not sent."""
+
+    default_sent_state = "definitely_not_sent"
 
 
 class XaiRefused(XaiError):
     """The cap or the ceiling stopped the call before the network."""
 
+    default_sent_state = "definitely_not_sent"
+
 
 class XaiTimeout(XaiError):
     """A read or connect timeout after the request may have been sent. Not retried."""
+
+    default_sent_state = "possibly_sent_or_billed"
 
 
 class NotSent(Exception):
@@ -128,6 +139,7 @@ class UsageRecord:
         "and are not inside that cap. A prepaid balance and a $0 invoiced limit are account settings."
     )
     provider_request_id: str | None = None
+    provider_reported_model: str | None = None
 
     def as_log(self) -> dict[str, object]:
         fields: dict[str, object] = {
@@ -145,6 +157,9 @@ class UsageRecord:
         }
         if self.provider_request_id is not None:
             fields["provider_request_id"] = self.provider_request_id
+        if self.provider_reported_model is not None:
+            fields["provider_reported_model"] = self.provider_reported_model
+            fields["provider_model_identity"] = "provider_reported"
         return fields
 
 
@@ -258,9 +273,14 @@ class XaiClient:
         return pre_call_cost_usd(_token_estimate(prompt), self.output_token_budget)
 
     def dry_run_report(self, prompt: str, *, schema: Mapping[str, object] | None = None) -> dict[str, object]:
-        """The request that would be sent. No socket is opened and no key is read."""
+        """The request that would be sent. No socket is opened and no key is read.
+
+        The token count covers the whole JSON body: system text, schema, and the
+        user prompt. The cost is a local pre-send estimate, not an invoice cap.
+        """
         request = self.build_request(prompt, schema=schema)
-        prompt_tokens = _token_estimate(prompt)
+        encoded = json.dumps(request, sort_keys=True, separators=(",", ":"))
+        prompt_tokens = _token_estimate(encoded)
         estimate = pre_call_cost_usd(prompt_tokens, self.output_token_budget)
         long_context = prompt_tokens >= SHORT_CONTEXT_TOKENS
         return {
@@ -335,13 +355,19 @@ class XaiClient:
                     self._sleep(delay)
                     delay *= 2
                     continue
-                raise XaiError("xAI connection was refused before the request was sent.") from None
+                raise XaiError(
+                    "xAI connection was refused before the request was sent.",
+                    sent_state="definitely_not_sent",
+                ) from None
             except (XaiTimeout, TimeoutError) as exc:
                 self.calls_sent += 1
                 raise XaiTimeout(_redact("xAI read timed out after send. Not retried.", key)) from exc
             self.calls_sent += 1
             return response
-        raise XaiError("xAI connection was refused before the request was sent.")
+        raise XaiError(
+            "xAI connection was refused before the request was sent.",
+            sent_state="definitely_not_sent",
+        )
 
     def _refuse_tools(self, request: Mapping[str, object]) -> None:
         banned = {"tools", "tool_choice", "web_search", "search_parameters", "x_search"}
@@ -384,6 +410,7 @@ def _parse_success(response: HttpResponse, *, key: str, request_hash: str, model
             latency_ms=latency_ms,
             http_status=response.status,
             provider_request_id=request_id,
+            provider_reported_model=_reported_model(payload),
         )
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -455,30 +482,59 @@ def format_dry_run_report(report: Mapping[str, object]) -> str:
     lines = [
         "dry_run: true",
         "sent: false",
-        f"model: {report.get('model')}",
-        f"endpoint: {report.get('endpoint')}",
-        "headers: Authorization: Bearer [redacted]; Content-Type: application/json; User-Agent: SterlingResearch/1.0",
-        f"max_calls: {report.get('max_calls')}",
-        f"max_estimated_tokens: {report.get('max_estimated_tokens')}",
-        f"retries_after_send: {report.get('retries_after_send')}",
-        f"token_estimate: {report.get('token_estimate')}",
-        f"output_token_budget: {report.get('output_token_budget')}",
-        f"context_tier: {tier}",
-        f"price_input_usd_per_million: {report.get('price_input_usd_per_million')}",
-        f"price_cached_input_usd_per_million: {report.get('price_cached_input_usd_per_million')}",
-        f"price_output_usd_per_million: {report.get('price_output_usd_per_million')}",
-        "long_context_prices_usd_per_million: input 2.50; cached input 0.40; output 5.00",
-        "us_regional_endpoint_multiplier: 1.1 (not applied to api.x.ai)",
-        "cached_input_in_pre_call_estimate: false",
-        "billing_note: reasoning tokens and the provider invoice can exceed this pre-call estimate",
-        f"price_verified_on: {PRICE_VERIFIED_ON}",
-        "price_source: https://docs.x.ai/developers/models/grok-4.3 ; https://docs.x.ai/developers/pricing",
-        f"pre_call_cost_estimate_usd: {report.get('pre_call_cost_estimate_usd')}",
-        f"cost_ceiling_usd: {report.get('cost_ceiling_usd')}",
-        f"within_ceiling: {'true' if report.get('within_ceiling') is True else 'false'}",
-        f"payload: {payload}",
+        "orders: none",
+        "connection: not opened",
     ]
+    for key in (
+        "data_source",
+        "publication",
+        "tradable",
+        "stale",
+        "missing",
+        "prompt_version",
+        "prompt_sha256",
+        "schema_sha256",
+    ):
+        if key in report:
+            lines.append(f"{key}: {report[key]}")
+    lines.extend(
+        [
+            f"model: {report.get('model')}",
+            f"endpoint: {report.get('endpoint')}",
+            "headers: Authorization: Bearer [redacted]; Content-Type: application/json; User-Agent: SterlingResearch/1.0",
+            f"max_calls: {report.get('max_calls')}",
+            f"max_estimated_tokens: {report.get('max_estimated_tokens')}",
+            f"retries_after_send: {report.get('retries_after_send')}",
+            f"token_estimate: {report.get('token_estimate')}",
+            f"output_token_budget: {report.get('output_token_budget')}",
+            f"context_tier: {tier}",
+            f"price_input_usd_per_million: {report.get('price_input_usd_per_million')}",
+            f"price_cached_input_usd_per_million: {report.get('price_cached_input_usd_per_million')}",
+            f"price_output_usd_per_million: {report.get('price_output_usd_per_million')}",
+            "long_context_prices_usd_per_million: input 2.50; cached input 0.40; output 5.00",
+            "us_regional_endpoint_multiplier: 1.1 (not applied to api.x.ai)",
+            "cached_input_in_pre_call_estimate: false",
+            "token_estimate_scope: full request JSON (system, schema, and messages)",
+            (
+                "billing_note: local pre-send estimate, not a provider billing cap. "
+                "Reasoning tokens or endpoint pricing can exceed this estimate and the $0.25 ceiling"
+            ),
+            f"price_verified_on: {PRICE_VERIFIED_ON}",
+            "price_source: https://docs.x.ai/developers/models/grok-4.3 ; https://docs.x.ai/developers/pricing",
+            f"pre_call_cost_estimate_usd: {report.get('pre_call_cost_estimate_usd')}",
+            f"cost_ceiling_usd: {report.get('cost_ceiling_usd')}",
+            f"within_ceiling: {'true' if report.get('within_ceiling') is True else 'false'}",
+            f"payload: {payload}",
+        ]
+    )
     return "\n".join(lines)
+
+
+def _reported_model(payload: Mapping[str, object]) -> str | None:
+    value = payload.get("model")
+    if not isinstance(value, str) or not value.strip() or len(value) > 80:
+        return None
+    return value.strip()
 
 
 def _token_estimate(text: str) -> int:

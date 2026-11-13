@@ -22,15 +22,22 @@ def allocation_prompt(
     as_of: datetime,
     tradable: set[str],
     sonia: Sequence[tuple[date, Decimal]] = (),
+    snapshot: dict[str, object] | None = None,
+    provenance: str = "supplied",
 ) -> str:
-    """JSON the weekly job sends. Prints available after ``as_of`` are omitted."""
-    snapshot = build_invest_snapshot(
-        book=book,
-        prints=prints,
-        as_of=as_of,
-        requested_tradable=tradable,
-        sonia=sonia,
-    )
+    """JSON the weekly job sends. Prints available after ``as_of`` are omitted.
+
+    Pass ``snapshot`` to embed the same object the risk gate will read.
+    """
+    if snapshot is None:
+        snapshot = build_invest_snapshot(
+            book=book,
+            prints=prints,
+            as_of=as_of,
+            requested_tradable=tradable,
+            sonia=sonia,
+            provenance=provenance,
+        )
     document = {
         "as_of": snapshot["as_of"],
         "constraints": {

@@ -13,7 +13,7 @@ from sterling.research.fx.grok_forward import ProposalLog
 from sterling.research.grok.providers import ProviderEnvelope
 from sterling.research.grok.schema import InstrumentQuote, MarketSnapshot, PaperPosition, estimate_tokens
 from sterling.research.grok.timekeeping import week_key
-from sterling.research.invest.book import Book, _probe_nav, derived_actions, weights_of
+from sterling.research.invest.book import Book, derived_actions, valuation_of
 from sterling.research.invest.identity import EXECUTION_PERMISSION, INVEST_V2
 from sterling.research.invest.prompt import PROMPT_VERSION
 from sterling.research.invest.registration import NO_TRADE_BAND
@@ -44,6 +44,7 @@ def run_invest_week(
     prints: Sequence[Print] | None = None,
     sonia: Sequence[tuple[date, Decimal]] = (),
     fill_session: date | None = None,
+    research_snapshot: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Reserve the week, then accept one allocation or keep the current book.
 
@@ -62,40 +63,38 @@ def run_invest_week(
     )
     if before_call is not None:
         before_call()
-    research = build_invest_snapshot(
-        book=book,
-        prints=_prints(prints, prices, as_of),
-        as_of=as_of,
-        requested_tradable=tradable,
-        sonia=sonia,
-    )
+    research = research_snapshot if research_snapshot is not None else _build(book, prints, prices, tradable, as_of, sonia)
     point_prices = prices_from_snapshot(research)
+    valued = valuation_of(book, point_prices)
+    current = _current_weights(valued)
+    nav = None if valued is None else valued["nav"]
     market = _market_snapshot(book, point_prices, research, as_of)
     calls = 0
     envelope: ProviderEnvelope | None = None
-    if market is None:
-        parsed: Allocation | AllocationFailure = AllocationFailure("missing_valuation")
-    else:
-        envelope = provider.complete(market, prompt=prompt)
-        calls = 1
-        if usage is None:
-            recorded = getattr(provider, "last_usage", None)
-            if isinstance(recorded, dict):
-                usage = recorded
-        parsed = parse_allocation(envelope.raw_response, expected_model_id=envelope.model_id)
-    current = weights_of(book, point_prices, as_of.date())
-    if current is None:
-        current = {name: ZERO for name in (*FUNDS, CASH)} if not _held_unpriced(book, point_prices) else None
+    try:
+        if market is None:
+            parsed: Allocation | AllocationFailure = AllocationFailure("missing_valuation")
+        else:
+            envelope = provider.complete(market, prompt=prompt)
+            calls = 1
+            if usage is None:
+                recorded = getattr(provider, "last_usage", None)
+                if isinstance(recorded, dict):
+                    usage = recorded
+            parsed = parse_allocation(envelope.raw_response, expected_model_id=envelope.model_id)
+    except Exception as exc:
+        return _fail_provider(log, book, as_of, mode, week, exc, usage)
     reply = "" if envelope is None else envelope.raw_response
     gate, reasons, targets, confidence, actions, raw = _disposition(
         parsed,
         current,
-        book,
         point_prices,
         research,
         as_of,
         fill_session,
         reply,
+        envelope,
+        nav,
     )
     if gate == "accepted" and isinstance(parsed, Allocation):
         from sterling.research.invest.daily import expire_replaced
@@ -128,12 +127,21 @@ def run_invest_week(
         "system": INVEST_V2.system,
         "week_key": week,
     }
+    fields.update(_model_fields(envelope, parsed))
     if isinstance(parsed, Allocation):
         fields["change_justification"] = parsed.change_justification
         fields["decision"] = parsed.decision
         fields["identified_risks"] = list(parsed.identified_risks)
         fields["portfolio_reasoning"] = parsed.portfolio_reasoning
-        fields["verified_model_id"] = parsed.model_id
+    if isinstance(parsed, AllocationFailure) and parsed.reason != "missing_valuation":
+        _append(log, as_of, "provider_failure", _failure_body(week, "invalid_response", parsed.reason, "possibly_sent_or_billed"))
+    if "provider_model_mismatch" in reasons:
+        _append(
+            log,
+            as_of,
+            "provider_failure",
+            _failure_body(week, "model_identity", "provider_reported_model_disagrees", "possibly_sent_or_billed"),
+        )
     if gate != "accepted":
         fields["disposition"] = "HOLD"
         fields["raw_reply"] = raw
@@ -141,8 +149,7 @@ def run_invest_week(
     if usage:
         moment = _append(log, moment, "model_usage", usage)
     moment = _append(log, moment, "decision", fields)
-    marked = _probe_nav(book, point_prices, as_of.date())
-    nav = marked[0] if marked is not None else book.cash
+    reported = nav if nav is not None else book.cash
     _append(
         log,
         moment,
@@ -152,7 +159,7 @@ def run_invest_week(
     return {
         "execution_permission": EXECUTION_PERMISSION,
         "gate": gate,
-        "nav_gbp": format(nav, "f"),
+        "nav_gbp": format(reported, "f"),
         "provider_calls": calls,
         "status": "decided",
         "week_key": week,
@@ -162,19 +169,25 @@ def run_invest_week(
 def _disposition(
     parsed: Allocation | AllocationFailure,
     current: dict[str, Decimal] | None,
-    book: Book,
     prices: dict[str, Decimal],
     research: dict[str, object],
     as_of: datetime,
     fill_session: date | None,
     reply: str,
+    envelope: ProviderEnvelope | None,
+    nav: Decimal | None,
 ) -> tuple[str, list[str], dict[str, Decimal], Decimal, dict[str, str], str]:
+    del prices
     held = {name: "HOLD" for name in FUNDS}
     flat = current or {name: ZERO for name in (*FUNDS, CASH)}
     stored = reply.replace("\x00", "")[:20000]
-    if isinstance(parsed, AllocationFailure):
-        return "hold", [parsed.reason], flat, ZERO, held, stored
-    if current is None or _held_unpriced(book, prices):
+    if isinstance(parsed, AllocationFailure) or _reported_model_disagrees(envelope):
+        reasons = [] if isinstance(parsed, Allocation) else [parsed.reason]
+        if _reported_model_disagrees(envelope):
+            reasons.append("provider_model_mismatch")
+        confidence = ZERO if isinstance(parsed, AllocationFailure) else parsed.confidence
+        return "hold", reasons, flat, confidence, held, stored
+    if current is None:
         return "hold", ["missing_valuation"], flat, parsed.confidence, held, stored
     if parsed.decision in {"HOLD", "NO_TRADE"}:
         if _weights_differ(parsed.weights, current):
@@ -184,8 +197,6 @@ def _disposition(
     from sterling.research.invest.snapshot import priced_names, stale_names, tradable_names
 
     limits = load_research_limits()
-    marked = _probe_nav(book, prices, as_of.date())
-    nav = None if marked is None else marked[0]
     decision = fail_closed_allocation(
         parsed.weights,
         current,
@@ -212,21 +223,118 @@ def _disposition(
     )
 
 
+def _build(
+    book: Book,
+    prints: Sequence[Print] | None,
+    prices: dict[str, Decimal],
+    tradable: set[str],
+    as_of: datetime,
+    sonia: Sequence[tuple[date, Decimal]],
+) -> dict[str, object]:
+    if prints is None:
+        synthetic = [(ticker, as_of.date(), price, as_of) for ticker, price in prices.items() if price > 0]
+        return build_invest_snapshot(
+            book=book,
+            prints=synthetic,
+            as_of=as_of,
+            requested_tradable=tradable,
+            sonia=sonia,
+            provenance="synthetic-fixture",
+        )
+    return build_invest_snapshot(
+        book=book,
+        prints=prints,
+        as_of=as_of,
+        requested_tradable=tradable,
+        sonia=sonia,
+        provenance="supplied",
+    )
+
+
+def _current_weights(valued: dict[str, Decimal] | None) -> dict[str, Decimal] | None:
+    if valued is None:
+        return None
+    return {name: valued[name] for name in (*FUNDS, CASH)}
+
+
+def _reported_model_disagrees(envelope: ProviderEnvelope | None) -> bool:
+    if envelope is None or envelope.provider_reported_model is None:
+        return False
+    return envelope.provider_reported_model != envelope.model_id
+
+
+def _model_fields(envelope: ProviderEnvelope | None, parsed: Allocation | AllocationFailure) -> dict[str, object]:
+    configured = "" if envelope is None else envelope.model_id
+    reported = None if envelope is None else envelope.provider_reported_model
+    if reported is None:
+        identity = "absent"
+    elif reported == configured:
+        identity = "provider_reported"
+    else:
+        identity = "mismatch"
+    fields: dict[str, object] = {
+        "configured_model_id": configured,
+        "provider_model_identity": identity,
+        "provider_reported_model": "" if reported is None else reported,
+    }
+    if isinstance(parsed, Allocation):
+        fields["json_model_id"] = parsed.model_id
+    return fields
+
+
+def _failure_body(week: str, kind: str, message: str, sent_state: str) -> dict[str, object]:
+    return {
+        "execution_permission": EXECUTION_PERMISSION,
+        "kind": kind,
+        "message": message[:500],
+        "sent_state": sent_state,
+        "week_key": week,
+    }
+
+
+def _fail_provider(
+    log: ProposalLog,
+    book: Book,
+    as_of: datetime,
+    mode: str,
+    week: str,
+    exc: Exception,
+    usage: dict[str, object] | None,
+) -> dict[str, object]:
+    sent_state = str(getattr(exc, "sent_state", "possibly_sent_or_billed"))
+    message = str(exc).replace("\n", " ")[:500]
+    moment = as_of
+    error_usage = getattr(exc, "usage", None)
+    logged = usage
+    if logged is None and error_usage is not None and hasattr(error_usage, "as_log"):
+        recorded = error_usage.as_log()
+        logged = recorded if isinstance(recorded, dict) else None
+    if logged:
+        moment = _append(log, moment, "model_usage", logged)
+    _append(log, moment, "provider_failure", _failure_body(week, type(exc).__name__, message, sent_state))
+    _append(
+        log,
+        moment,
+        "state_commit",
+        {"clock_source": _clock(mode), "mode": mode, "state_hash": _state_hash(book), "week_key": week},
+    )
+    calls = 0 if sent_state == "definitely_not_sent" else 1
+    return {
+        "execution_permission": EXECUTION_PERMISSION,
+        "gate": "hold",
+        "nav_gbp": format(book.cash, "f"),
+        "provider_calls": calls,
+        "sent_state": sent_state,
+        "status": "failed",
+        "week_key": week,
+    }
+
+
 def _weights_differ(proposed: dict[str, Decimal], current: dict[str, Decimal]) -> bool:
     for ticker in FUNDS:
         if abs(proposed.get(ticker, ZERO) - current.get(ticker, ZERO)) > NO_TRADE_BAND:
             return True
     return False
-
-
-def _held_unpriced(book: Book, prices: dict[str, Decimal]) -> bool:
-    return any(book.quantity(ticker) > 0 and ticker not in prices for ticker in FUNDS)
-
-
-def _prints(prints: Sequence[Print] | None, prices: dict[str, Decimal], as_of: datetime) -> list[Print]:
-    if prints is not None:
-        return list(prints)
-    return [(ticker, as_of.date(), price, as_of) for ticker, price in prices.items() if price > 0]
 
 
 def _scheduled_fill(as_of: datetime, fill_session: date | None) -> date | None:

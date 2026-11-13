@@ -16,10 +16,10 @@ from sterling.research.costs import research_cost_model
 from sterling.research.errors import ResearchError
 from sterling.research.grok.context import PriceObservation, SoniaObservation, build_market_context
 from sterling.research.grok.schema import CashRate
-from sterling.research.invest.book import Book, weights_of
+from sterling.research.invest.book import Book, valuation_of
 from sterling.research.invest.cash_rate import CashRateQuote, cash_quote, sonia_available_at
 from sterling.research.invest.registration import STARTING_CASH_GBP
-from sterling.research.invest.schema import CASH, FUNDS
+from sterling.research.invest.schema import FUNDS
 from sterling.research.money import ZERO, quantize_money
 from sterling.research.risk_config import load_research_limits
 
@@ -34,8 +34,14 @@ def build_invest_snapshot(
     as_of: datetime,
     requested_tradable: set[str],
     sonia: Sequence[tuple[date, Decimal]] = (),
+    provenance: str = "supplied",
 ) -> dict[str, object]:
-    """Structured snapshot. Values are strings and lists so the decision log can store it."""
+    """Structured snapshot. Values are strings and lists so the decision log can store it.
+
+    ``provenance`` is ``supplied`` when every ``published_at`` came with the
+    observation, and ``synthetic-fixture`` when the clock was assigned by a
+    fixture. A fixture timestamp is never labelled as a market source.
+    """
     stamped = _utc(as_of)
     visible = [
         (ticker, session, price, _utc(published))
@@ -60,9 +66,9 @@ def build_invest_snapshot(
     )
     latest = _latest(visible)
     prices = {ticker: item[2] for ticker, item in latest.items()}
-    weights = weights_of(book, prices, as_of.date())
-    nav = _nav(book, prices)
-    weight_map = weights or {name: ZERO for name in (*FUNDS, CASH)}
+    valued = valuation_of(book, prices)
+    publication = "synthetic" if provenance == "synthetic-fixture" else "source-timestamp"
+    source_name = "synthetic-fixture" if provenance == "synthetic-fixture" else "supplied"
     quotes: list[dict[str, object]] = []
     for ticker in FUNDS:
         quantity = book.quantity(ticker)
@@ -74,12 +80,13 @@ def build_invest_snapshot(
                     "price_gbp": None,
                     "published_at": None,
                     "session": None,
+                    "publication": publication,
                     "source": None,
                     "staleness": "missing",
                     "tradable": "false",
                     "units": format(quantity, "f"),
                     "value_gbp": None,
-                    "weight": format(weight_map.get(ticker, ZERO), "f"),
+                    "weight": _weight_text(valued, ticker),
                 }
             )
             continue
@@ -92,25 +99,27 @@ def build_invest_snapshot(
                 "instrument_id": ticker,
                 "price_gbp": format(price, "f"),
                 "published_at": published.isoformat(),
+                "publication": publication,
                 "session": session.isoformat(),
-                "source": "paper-v2",
+                "source": source_name,
                 "staleness": "fresh" if fresh else "stale",
                 "tradable": "true" if tradable else "false",
                 "units": format(quantity, "f"),
                 "value_gbp": format(quantize_money(quantity * price), "f"),
-                "weight": format(weight_map.get(ticker, ZERO), "f"),
+                "weight": _weight_text(valued, ticker),
             }
         )
     limits = load_research_limits()
     model = research_cost_model(as_of.date())
-    cumulative = (nav / STARTING_CASH_GBP - 1) if STARTING_CASH_GBP > 0 else ZERO
     rate = cash_quote(sonia, as_of.date(), as_of=stamped)
     document: dict[str, object] = {
         "as_of": stamped.isoformat(),
         "data_availability": {
             "as_of": stamped.isoformat(),
             "invented_observations": "none",
+            "publication": publication,
             "rule": "published_at <= as_of",
+            "valuation": "complete" if valued is not None else "incomplete",
         },
         "indicators": [
             {
@@ -121,17 +130,7 @@ def build_invest_snapshot(
             }
             for feature in context.features
         ],
-        "portfolio": {
-            "cash_gbp": format(book.cash, "f"),
-            "cumulative_return": format(cumulative, "f"),
-            "high_water_gbp": format(book.peak, "f"),
-            "holdings": quotes,
-            "max_drawdown": format(book.max_drawdown, "f"),
-            "nav_gbp": format(nav, "f"),
-            "pnl_gbp": format(quantize_money(nav - STARTING_CASH_GBP), "f"),
-            "trades": book.trades,
-            "transaction_costs_gbp": format(book.cumulative_costs, "f"),
-        },
+        "portfolio": _portfolio(book, quotes, valued),
         "price_history": [
             {
                 "instrument_id": ticker,
@@ -168,6 +167,39 @@ def build_invest_snapshot(
     if limits.owner_approved:
         raise ResearchError("research snapshot refuses an owner-approved trading policy")
     return document
+
+
+def _weight_text(valued: dict[str, Decimal] | None, ticker: str) -> str | None:
+    if valued is None:
+        return None
+    return format(valued.get(ticker, ZERO), "f")
+
+
+def _portfolio(book: Book, quotes: list[dict[str, object]], valued: dict[str, Decimal] | None) -> dict[str, object]:
+    if valued is None:
+        nav_text = None
+        receivable = None
+        pnl = None
+        cumulative = None
+    else:
+        nav = valued["nav"]
+        nav_text = format(nav, "f")
+        receivable = format(valued["receivable"], "f")
+        pnl = format(quantize_money(nav - STARTING_CASH_GBP), "f")
+        cumulative = format((nav / STARTING_CASH_GBP - 1) if STARTING_CASH_GBP > 0 else ZERO, "f")
+    return {
+        "cash_gbp": format(book.cash, "f"),
+        "cumulative_return": cumulative,
+        "high_water_gbp": format(book.peak, "f"),
+        "holdings": quotes,
+        "max_drawdown": format(book.max_drawdown, "f"),
+        "nav_gbp": nav_text,
+        "pnl_gbp": pnl,
+        "receivable_gbp": receivable if receivable is not None else format(ZERO, "f"),
+        "spendable_cash_gbp": format(book.cash, "f"),
+        "trades": book.trades,
+        "transaction_costs_gbp": format(book.cumulative_costs, "f"),
+    }
 
 
 def tradable_names(snapshot: dict[str, object]) -> set[str]:
@@ -265,15 +297,6 @@ def _sonia_block(rate: CashRateQuote | None, wholesale: CashRate | None) -> dict
         "sonia_percent": format(rate.sonia_percent, "f"),
         "status": "published",
     }
-
-
-def _nav(book: Book, prices: dict[str, Decimal]) -> Decimal:
-    total = book.cash
-    for ticker in FUNDS:
-        price = prices.get(ticker)
-        if price is not None:
-            total += book.quantity(ticker) * price
-    return quantize_money(total)
 
 
 def _weekdays(start: date, end: date) -> int:

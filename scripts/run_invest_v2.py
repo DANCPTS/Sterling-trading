@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import hashlib
 import importlib.util
+import json
 import os
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -16,9 +19,10 @@ from sterling.research.invest.book import Book
 from sterling.research.invest.daily import load_book
 from sterling.research.invest.decide import run_invest_week
 from sterling.research.invest.lanes import assert_lane
-from sterling.research.invest.prompt import allocation_prompt, latest_prices
+from sterling.research.invest.prompt import PROMPT_VERSION, allocation_prompt, latest_prices
 from sterling.research.invest.recorded import RecordedAllocationProvider, load_recorded_response
 from sterling.research.invest.schema import ALLOCATION_SCHEMA, FUNDS
+from sterling.research.invest.snapshot import build_invest_snapshot, missing_names, stale_names, tradable_names
 from sterling.xai_client import XaiClient, format_dry_run_report
 
 
@@ -51,21 +55,56 @@ def main(argv: list[str] | None = None) -> int:
         print("recorded provider needs --response-file", file=sys.stderr)
         return 2
     as_of = datetime.now(UTC) if args.as_of is None else datetime.fromisoformat(args.as_of)
-    if args.dry_run or args.provider in {"mock", "recorded"} or args.fixture or args.as_of:
-        prints = [(name, as_of.date(), Decimal("100"), as_of) for name in FUNDS]
-        mode = "simulated_clock"
-    else:
-        prints = _live_prints(args.cache or Path("evidence"), as_of)
-        mode = "forward"
+    if args.dry_run and args.fetch_free:
+        print("dry-run does not fetch and does not open a connection", file=sys.stderr)
+        return 2
+    if args.dry_run and not args.fixture and args.cache is None:
+        print("dry-run needs --fixture or --cache with --as-of", file=sys.stderr)
+        return 2
+    if args.dry_run and args.cache is not None and not args.fixture and args.as_of is None:
+        print("a cache dry-run needs --as-of", file=sys.stderr)
+        return 2
+    try:
+        prints, provenance = _observations(args, as_of)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    mode = "simulated_clock" if provenance == "synthetic-fixture" or args.as_of or args.fixture else "forward"
+    book = load_book(args.log) if args.log.is_file() else Book()
+    prices = latest_prices(prints, as_of)
+    research = build_invest_snapshot(
+        book=book,
+        prints=prints,
+        as_of=as_of,
+        requested_tradable=set(prices) if prices else set(FUNDS),
+        provenance=provenance,
+    )
+    prompt = allocation_prompt(
+        book=book,
+        prints=prints,
+        as_of=as_of,
+        tradable=set(prices),
+        snapshot=research,
+        provenance=provenance,
+    )
     if args.dry_run:
-        book = load_book(args.log) if args.log.is_file() else Book()
-        prompt = allocation_prompt(book=book, prints=prints, as_of=as_of, tradable=set(latest_prices(prints, as_of)))
         report = XaiClient(enabled=False, dry_run=True, model="grok-4.3").dry_run_report(prompt, schema=ALLOCATION_SCHEMA)
+        report["data_source"] = provenance
+        report["missing"] = ",".join(sorted(missing_names(research))) or "none"
+        report["prompt_sha256"] = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        report["prompt_version"] = PROMPT_VERSION
+        availability = research.get("data_availability")
+        published = ""
+        if isinstance(availability, dict):
+            published = str(availability.get("publication") or "")
+        report["publication"] = published
+        report["schema_sha256"] = hashlib.sha256(
+            json.dumps(ALLOCATION_SCHEMA, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        report["stale"] = ",".join(sorted(stale_names(research))) or "none"
+        report["tradable"] = ",".join(sorted(tradable_names(research))) or "none"
         print(format_dry_run_report(report))
         return 0
-    prices = latest_prices(prints, as_of)
-    book = load_book(args.log) if args.log.is_file() else Book()
-    prompt = allocation_prompt(book=book, prints=prints, as_of=as_of, tradable=set(prices))
     result = run_invest_week(
         log_path=args.log,
         book=book,
@@ -76,6 +115,8 @@ def main(argv: list[str] | None = None) -> int:
         prompt=prompt,
         before_call=_publish_reserve,
         mode=mode,
+        prints=prints,
+        research_snapshot=research,
     )
     print(
         f"policy=paper-v2 status={result['status']} week={result['week_key']} "
@@ -83,6 +124,37 @@ def main(argv: list[str] | None = None) -> int:
         f"execution_permission=NOT_ISSUED"
     )
     return 0
+
+
+def _observations(args: argparse.Namespace, as_of: datetime) -> tuple[list[tuple[str, date, Decimal, datetime]], str]:
+    if args.cache is not None and not args.fixture and not args.fetch_free:
+        return _cache_prints(args.cache, as_of), "supplied"
+    if args.dry_run or args.provider in {"mock", "recorded"} or args.fixture or args.as_of:
+        return [(name, as_of.date(), Decimal("100"), as_of) for name in FUNDS], "synthetic-fixture"
+    return _live_prints(args.cache or Path("evidence"), as_of), "supplied"
+
+
+def _cache_prints(cache: Path, as_of: datetime) -> list[tuple[str, date, Decimal, datetime]]:
+    """Local CSV rows. ``published_at`` is required and is never invented."""
+    prints: list[tuple[str, date, Decimal, datetime]] = []
+    for ticker in FUNDS:
+        path = cache / f"{ticker}.csv"
+        if not path.is_file():
+            continue
+        with path.open(encoding="utf-8", newline="") as handle:
+            for record in csv.DictReader(handle):
+                raw_time = (record.get("published_at") or "").strip()
+                if not raw_time:
+                    raise ValueError(f"{ticker}.csv is missing published_at")
+                published = datetime.fromisoformat(raw_time)
+                if published.tzinfo is None:
+                    raise ValueError(f"{ticker}.csv published_at needs a timezone")
+                if published > as_of:
+                    continue
+                prints.append((ticker, date.fromisoformat(record["date"][:10]), Decimal(record["close"]), published))
+    if not prints:
+        raise ValueError("cache has no price published at or before as-of")
+    return prints
 
 
 def _repository_evidence(path: Path) -> bool:

@@ -29,6 +29,7 @@ class ProviderEnvelope:
     model_id: str
     responded_at: datetime
     raw_response: str
+    provider_reported_model: str | None = None
 
     def __post_init__(self) -> None:
         require_utc(self.responded_at)
