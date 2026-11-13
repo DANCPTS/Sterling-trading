@@ -108,15 +108,21 @@ def mark(book: Book, prices: dict[str, Decimal], session: date) -> tuple[Decimal
 
 
 def _probe_nav(book: Book, prices: dict[str, Decimal], session: date) -> tuple[Decimal, dict[str, str]] | None:
-    """Value the book without keeping the mark on the high-water path."""
+    """Value the book without keeping the mark on the high-water path.
+
+    Sizing and a decision snapshot call this. The peak and the drawdown stay
+    where the last committed daily close left them, including when the probe
+    raises.
+    """
     peak, drawdown = book.peak, book.max_drawdown
     before = len(book.nav_rows)
-    marked = mark(book, prices, session)
-    if len(book.nav_rows) > before:
-        book.nav_rows.pop()
-    book.peak = peak
-    book.max_drawdown = drawdown
-    return marked
+    try:
+        return mark(book, prices, session)
+    finally:
+        if len(book.nav_rows) > before:
+            del book.nav_rows[before:]
+        book.peak = peak
+        book.max_drawdown = drawdown
 
 
 def weights_of(book: Book, prices: dict[str, Decimal], session: date) -> dict[str, Decimal] | None:

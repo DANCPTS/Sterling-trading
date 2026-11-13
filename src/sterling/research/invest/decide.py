@@ -13,7 +13,7 @@ from sterling.research.fx.grok_forward import ProposalLog
 from sterling.research.grok.providers import ProviderEnvelope
 from sterling.research.grok.schema import InstrumentQuote, MarketSnapshot, PaperPosition
 from sterling.research.grok.timekeeping import week_key
-from sterling.research.invest.book import Book, derived_actions, mark, weights_of
+from sterling.research.invest.book import Book, _probe_nav, derived_actions, weights_of
 from sterling.research.invest.identity import EXECUTION_PERMISSION, INVEST_V2
 from sterling.research.invest.schema import CASH, FUNDS, Allocation, AllocationFailure, parse_allocation
 from sterling.research.money import ZERO, quantize_money
@@ -93,7 +93,7 @@ def run_invest_week(
         moment = _append(log, moment, "model_usage", usage)
     moment = _append(log, moment, "decision", fields)
     book.pending = parsed.weights if gate == "accepted" and isinstance(parsed, Allocation) else None
-    marked = mark(book, prices, as_of.date())
+    marked = _probe_nav(book, prices, as_of.date())
     nav = marked[0] if marked is not None else book.cash
     _append(
         log,
