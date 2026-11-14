@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Copy one mock-lane research log out of the temporary machine.
 # Usage: scripts/export_research_run.sh LOG_PATH [EXPORT_NAME]
-# Scans for the API key while XAI_API_KEY is still set, then the caller unsets it.
+# The key scan reads XAI_API_KEY from the environment inside Python.
+# The value is never placed on a command line.
 set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
@@ -58,16 +59,26 @@ for path in sorted(stage.iterdir()):
 print(f"verified {count} records")
 PY
 
-if [[ -n "${XAI_API_KEY:-}" ]]; then
-  if grep -F -q -- "$XAI_API_KEY" "$stage"/*; then
-    echo "export aborted: API key text is in the log" >&2
-    exit 3
-  fi
-fi
-if grep -F -q -e "Authorization" -e "Bearer" "$stage"/*; then
-  echo "export aborted: Authorization or Bearer is in the log" >&2
-  exit 3
-fi
+python3 - "$stage" << 'PY'
+import os
+import sys
+from pathlib import Path
+
+stage = Path(sys.argv[1])
+key = os.environ.get("XAI_API_KEY", "")
+forbidden = [b"Authorization", b"Bearer"]
+key_bytes = key.encode("utf-8") if key else b""
+for path in sorted(stage.iterdir()):
+    if not path.is_file():
+        continue
+    data = path.read_bytes()
+    if key_bytes and key_bytes in data:
+        print("export aborted: API key text is in the log", file=sys.stderr)
+        sys.exit(3)
+    if any(needle in data for needle in forbidden):
+        print("export aborted: Authorization or Bearer is in the log", file=sys.stderr)
+        sys.exit(3)
+PY
 
 copy_tree() {
   local dest=$1
