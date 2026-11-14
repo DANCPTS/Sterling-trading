@@ -385,6 +385,7 @@ def _sonia_block(rate: CashRateQuote | None, wholesale: CashRate | None, absence
     published = {
         "publication_lag": "09:00 Europe/London on the next XLON session",
         "series": "IUDSOIA",
+        "source": "boe-iadb",
         "wholesale_annual_decimal": None if wholesale is None else format(wholesale.annual_rate, "f"),
         "wholesale_observed_on": None if wholesale is None else wholesale.observed_on.isoformat(),
         "wholesale_published_at": None if wholesale is None else wholesale.published_at.isoformat(),

@@ -116,6 +116,7 @@ def test_cached_sonia_waits_for_nine_london(tmp_path: Path, stamped: None, capsy
     assert "sonia_status: published" in later
     assert "sonia_reference_date: 2026-11-11" in later
     assert "sonia_percent: 3.9700" in later
+    assert '"source":"boe-iadb"' in later.replace('\\"', '"')
     assert "4.1000" not in later.split("payload: ", 1)[0]
 
 
