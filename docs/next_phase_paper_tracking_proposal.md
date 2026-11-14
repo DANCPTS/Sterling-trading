@@ -39,6 +39,10 @@ The weekly reservation is local to one log file. It does not stop a second machi
 - The runner workflow stays `if: false` until a separate approval turns a schedule on.
 - `execution_permission` stays `NOT_ISSUED`. No broker, no real-money order.
 
+## Evidence repository
+
+An earlier draft of this note said a durable evidence repository did not exist. That was wrong. The owner states that `DANCPTS/sterling-forward-evidence` exists and is private. This agent cannot read it. Cursor's GitHub connection returns `scm_repo_not_accessible` for that name, and `gh repo view` returns `Could not resolve to a Repository`. Branches, protection rules, commits, and Actions settings were not visible. No workaround was used, and the repository was not cloned or modified. Local code that can push there is `deploy/private-runner/publish_evidence.py`, and only when `STERLING_EVIDENCE_CLONE` and `STERLING_PUBLISH_PY` are set. Those variables stay unset for the manual research day.
+
 ## Unresolved blockers
 
-Durable evidence storage, a cross-runner lock, data licensing, key handling per call, and an owner decision to leave the manual single-machine procedure. None of those are done by this document.
+Read access to the private evidence repository, a separate research path that cannot collide with its existing logs, a cross-runner lock, data licensing, key handling per call, and an owner decision to leave the manual single-machine procedure. None of those are done by this document.
