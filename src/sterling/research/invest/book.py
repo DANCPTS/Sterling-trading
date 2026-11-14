@@ -125,7 +125,37 @@ def _probe_nav(book: Book, prices: dict[str, Decimal], session: date) -> tuple[D
         book.max_drawdown = drawdown
 
 
+def valuation_of(book: Book, prices: dict[str, Decimal]) -> dict[str, Decimal] | None:
+    """NAV from supplied prices. Receivables count in NAV and not in spendable cash.
+
+    This does not call ``mark``, so the committed high-water mark, drawdown,
+    and NAV history stay where the daily close left them.
+    """
+    total = book.cash
+    for ticker in FUNDS:
+        quantity = book.quantity(ticker)
+        if quantity == 0:
+            continue
+        price = prices.get(ticker)
+        if price is None or price <= 0:
+            return None
+        total += quantity * price
+    receivable = quantize_money(sum((item.amount for item in book.receivables), ZERO))
+    nav = quantize_money(total + receivable)
+    if nav <= 0:
+        return None
+    weights: dict[str, Decimal] = {CASH: book.cash / nav, "RECEIVABLE": receivable / nav}
+    for ticker in FUNDS:
+        quantity = book.quantity(ticker)
+        price = prices.get(ticker, ZERO)
+        weights[ticker] = (quantity * price / nav) if quantity > 0 and price > 0 else ZERO
+    return {"nav": nav, "spendable_cash": book.cash, "receivable": receivable, **weights}
+
+
 def weights_of(book: Book, prices: dict[str, Decimal], session: date) -> dict[str, Decimal] | None:
+    valued = valuation_of(book, prices)
+    if valued is not None:
+        return {name: valued[name] for name in (*FUNDS, CASH)}
     marked = _probe_nav(book, prices, session)
     if marked is None:
         return None

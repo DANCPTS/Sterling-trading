@@ -292,6 +292,7 @@ class ProposalLog:
             "performance",
             "cash_interest",
             "interest_pending",
+            "provider_failure",
         }:
             raise ResearchError("forward log event type is not allowed")
         stamped = require_utc(timestamp_utc)

@@ -9,6 +9,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+from sterling.pilot_config import ticks_to_usd
 from sterling.research.invest.report import _decimal, _money, _pct
 from sterling.research.invest.sessions import session_open
 from sterling.research.invest.verify import (
@@ -173,6 +174,8 @@ details {{ margin-top: 0.4rem; }}
 </section>
 <section>
 <h2>Model usage</h2>
+<p>Provider-reported actual cost is converted from cost_in_usd_ticks.
+The local $0.25 figure is a pre-call estimate guard, not a billing cap.</p>
 {_usage(records)}
 </section>
 </main>
@@ -654,6 +657,12 @@ def _grok(records: Sequence[Mapping[str, object]], lane: str) -> str:
     return "".join(blocks)
 
 
+def _provider_cost(ticks: object) -> str:
+    if isinstance(ticks, bool) or not isinstance(ticks, int):
+        return "provider-reported actual cost not supplied"
+    return f"provider-reported actual cost {ticks_to_usd(ticks)} USD from {ticks} ticks"
+
+
 def _usage(records: Sequence[Mapping[str, object]]) -> str:
     rows = [record for record in records if record.get("record_type") == "model_usage"]
     if not rows:
@@ -664,7 +673,7 @@ def _usage(records: Sequence[Mapping[str, object]]) -> str:
             "<p>"
             f"input {_esc(record.get('input_tokens'))}, cached {_esc(record.get('cached_tokens'))}, "
             f"output {_esc(record.get('output_tokens'))}, reasoning {_esc(record.get('reasoning_tokens'))}, "
-            f"cost ticks {_esc(record.get('cost_in_usd_ticks'))}, request {_esc(record.get('provider_request_id'))}, "
+            f"{_provider_cost(record.get('cost_in_usd_ticks'))}, request {_esc(record.get('provider_request_id'))}, "
             f"latency ms {_esc(record.get('latency_ms'))}."
             "</p>"
         )

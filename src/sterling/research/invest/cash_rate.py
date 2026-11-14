@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from decimal import Decimal
+from functools import lru_cache
 
 from sterling.research.calendar import LONDON, xlon
 from sterling.research.money import ZERO
@@ -58,6 +59,7 @@ def retail_annual_decimal(sonia_percent: Decimal) -> Decimal:
     return net_percent / Decimal(100)
 
 
+@lru_cache(maxsize=4096)
 def sonia_available_at(reference: date) -> datetime:
     """09:00 London on the next XLON day. That is when the Bank publishes the print."""
     calendar = xlon()
@@ -74,11 +76,13 @@ def cash_quote(
     """Latest IUDSOIA that refers to ``day`` or earlier and was already published."""
     if as_of is None:
         as_of = datetime.combine(day, time(16, 30), tzinfo=LONDON)
-    known = [
-        (reference, rate, sonia_available_at(reference))
-        for reference, rate in observations
-        if reference <= day and sonia_available_at(reference) <= as_of
-    ]
+    known: list[tuple[date, Decimal, datetime]] = []
+    for reference, rate in observations:
+        if reference > day:
+            continue
+        available = sonia_available_at(reference)
+        if available <= as_of:
+            known.append((reference, rate, available))
     if not known:
         return None
     reference, percent, available = max(known)

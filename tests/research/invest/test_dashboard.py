@@ -52,7 +52,7 @@ def test_page_escapes_marks_lane_and_has_no_order_controls(tmp_path: Path, stamp
     assert "@media (max-width: 720px)" in html
     assert "Sterling FX: not built yet" in html
     assert "Yahoo market-price inputs — delayed and not exchange-verified" in html
-    assert "No AI explanation recorded" in html
+    assert "mock portfolio sleeve" in html
     assert "MOCK" in html
     assert "<button" not in html and "<form" not in html and "place_order" not in html
     assert "9,955.14" not in html and "9955.14" not in html

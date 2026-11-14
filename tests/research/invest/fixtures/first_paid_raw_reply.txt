@@ -1,0 +1,25 @@
+{
+  "change_justification": "Current allocation is 100% CASH with zero holdings in all funds; indicators show mixed or negative returns and elevated drawdowns across assets, supporting no change.",
+  "confidence": "0.75",
+  "decision": "HOLD",
+  "identified_risks": ["elevated commodity drawdown", "mixed equity momentum"],
+  "model_id": "paper-v2-allocation",
+  "portfolio_reasoning": "Portfolio remains fully in cash as no fund demonstrates sufficiently strong risk-adjusted signals to justify allocation under current constraints.",
+  "reasons": {
+    "AGBP": "Negative 12m return and trend below 10m mean indicate caution.",
+    "CUKX": "Positive returns but within no-trade band given current zero weight.",
+    "IGLT": "Negative 12m return and drawdown suggest avoiding bond allocation.",
+    "SGLN": "Severe drawdown exceeding 24% and high volatility preclude allocation.",
+    "VWRP": "Recent negative 1m and 3m returns offset longer-term gains.",
+    "XSTR": "Near-zero returns provide no incentive to move from cash."
+  },
+  "weights": {
+    "AGBP": "0.0000",
+    "CASH": "1.0000",
+    "CUKX": "0.0000",
+    "IGLT": "0.0000",
+    "SGLN": "0.0000",
+    "VWRP": "0.0000",
+    "XSTR": "0.0000"
+  }
+}

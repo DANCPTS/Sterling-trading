@@ -66,7 +66,16 @@ def test_prompt_is_point_in_time_and_shared(tmp_path: Path, stamped: None) -> No
     live_envelope = live.complete(snapshot, prompt=first)
     assert captured == [first]
     assert fake.prompts == [first]
-    assert fake.schemas[0]["required"] == ["model_id", "confidence", "weights", "reasons"]
+    assert fake.schemas[0]["required"] == [
+        "model_id",
+        "confidence",
+        "decision",
+        "weights",
+        "reasons",
+        "portfolio_reasoning",
+        "identified_risks",
+        "change_justification",
+    ]
     assert "prompt_hash" not in json_schema_text(fake.schemas[0])
     assert mock_envelope.raw_response
     assert live_envelope.raw_response.startswith("{")
@@ -130,7 +139,7 @@ class _FakeClient:
             http_status=200,
             provider_request_id="req-fixture-1",
         )
-        return allocation_json(weights), usage
+        return allocation_json(weights, model_id=self.model), usage
 
 
 def _prints() -> list[tuple[str, date, Decimal, datetime]]:
