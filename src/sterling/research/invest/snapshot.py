@@ -48,6 +48,8 @@ class PricePrint:
     retrieved_at: datetime | None
     availability_basis: str
     source: str
+    quoted_currency: str | None = None
+    gbp_divisor: str | None = None
 
 
 def as_price_print(item: PricePrint | Print, *, provenance: str) -> PricePrint:
@@ -66,6 +68,8 @@ def as_price_print(item: PricePrint | Print, *, provenance: str) -> PricePrint:
             retrieved_at=None if item.retrieved_at is None else require_aware(item.retrieved_at, "retrieved_at"),
             availability_basis=basis,
             source="synthetic-fixture" if provenance == "synthetic-fixture" else item.source,
+            quoted_currency=item.quoted_currency,
+            gbp_divisor=item.gbp_divisor,
         )
     ticker, session, price, published = item
     stamped = require_aware(published, "published_at")
@@ -321,6 +325,8 @@ def _quote_row(
         "published_at": quote.available_at.isoformat(),
         "retrieved_at": _iso(quote.retrieved_at),
         "session": quote.session.isoformat(),
+        "quoted_currency": quote.quoted_currency,
+        "gbp_divisor": quote.gbp_divisor,
         "source": quote.source,
         "staleness": staleness,
         "tradable": "true" if tradable else "false",
@@ -340,6 +346,8 @@ def _history_row(item: PricePrint) -> dict[str, object]:
         "provider_published_at": _iso(item.provider_published_at),
         "published_at": item.available_at.isoformat(),
         "retrieved_at": _iso(item.retrieved_at),
+        "quoted_currency": item.quoted_currency,
+        "gbp_divisor": item.gbp_divisor,
         "session": item.session.isoformat(),
         "source": item.source,
     }

@@ -184,6 +184,28 @@ def test_yahoo_gbp_drops_float_residue() -> None:
     assert normalise_yahoo_gbp(Decimal("143.16000366210938")) == Decimal("143.1600")
     assert normalise_yahoo_gbp(Decimal("9.642499923706055")) == Decimal("9.6425")
     assert normalise_yahoo_gbp(Decimal("4.534999847412109")) == Decimal("4.5350")
+    row = _assumed("VWRP", date(2026, 11, 11), Decimal("143.1600"))
+    stamped = PricePrint(
+        ticker=row.ticker,
+        session=row.session,
+        price=row.price,
+        available_at=row.available_at,
+        exchange_close_at=row.exchange_close_at,
+        provider_published_at=None,
+        retrieved_at=row.retrieved_at,
+        availability_basis=row.availability_basis,
+        source=row.source,
+        quoted_currency="GBP",
+        gbp_divisor="1",
+    )
+    snapshot = build_invest_snapshot(book=Book(), prints=[stamped], as_of=AS_OF, requested_tradable=set(FUNDS))
+    view = project_snapshot(snapshot)
+    holdings = view["holdings"]
+    assert isinstance(holdings, list)
+    vwrp = next(item for item in holdings if isinstance(item, dict) and item["instrument_id"] == "VWRP")
+    assert vwrp["quoted_currency"] == "GBP"
+    assert vwrp["gbp_divisor"] == "1"
+    assert vwrp["price_gbp"] == "143.1600"
 
 
 def _assumed(ticker: str, session: date, price: Decimal = Decimal("100")) -> PricePrint:

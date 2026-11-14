@@ -105,6 +105,8 @@ def project_snapshot(snapshot: dict[str, object]) -> dict[str, object]:
                     "exchange_close_at": row.get("exchange_close_at"),
                     "instrument_id": row.get("instrument_id"),
                     "price_gbp": row.get("price_gbp"),
+                    "quoted_currency": row.get("quoted_currency"),
+                    "gbp_divisor": row.get("gbp_divisor"),
                     "provider_published_at": row.get("provider_published_at"),
                     "publication": row.get("publication"),
                     "retrieved_at": row.get("retrieved_at"),

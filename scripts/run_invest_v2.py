@@ -239,6 +239,8 @@ def _one_cached_print(
         retrieved_at=retrieved,
         availability_basis=basis_name,
         source=(record.get("source") or "local-csv").strip() or "local-csv",
+        quoted_currency=(record.get("quoted_currency") or "").strip() or None,
+        gbp_divisor=(record.get("gbp_divisor") or "").strip() or None,
     )
 
 
