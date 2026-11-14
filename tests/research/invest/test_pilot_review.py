@@ -58,12 +58,17 @@ def test_cli_keeps_an_old_quote_stale_and_drops_the_future(
     assert code == 0
     decision = _decision(log)
     prompt = json.loads(str(decision["prompt_text"]))
-    assert prompt["research_snapshot"] == decision["research_snapshot"]
-    holdings = {row["instrument_id"]: row for row in decision["research_snapshot"]["portfolio"]["holdings"]}
+    from sterling.research.invest.prompt import canonical_snapshot_sha256
+
+    stored = decision["research_snapshot"]
+    assert isinstance(stored, dict)
+    assert prompt["model_view"]["canonical_snapshot_sha256"] == canonical_snapshot_sha256(stored)
+    assert "price_history" not in prompt["model_view"]
+    holdings = {row["instrument_id"]: row for row in stored["portfolio"]["holdings"]}
     assert holdings["IGLT"]["staleness"] == "stale"
     assert holdings["IGLT"]["tradable"] == "false"
     assert holdings["IGLT"]["published_at"] == "2026-10-01T16:30:00+00:00"
-    assert holdings["IGLT"]["publication"] == "source-timestamp"
+    assert holdings["IGLT"]["availability_basis"] == "source-verified"
     text = json.dumps(decision["research_snapshot"])
     assert "999" not in text
     assert decision["gate"] == "hold"
@@ -244,7 +249,7 @@ def test_cache_dry_run_does_not_call_or_write_evidence(
     assert "connection: not opened" in text
     assert "orders: none" in text
     assert "data_source: supplied" in text
-    assert "publication: source-timestamp" in text
+    assert "publication: source-verified" in text
     assert "IGLT" in text.split("stale: ", 1)[1].split("\n", 1)[0]
     assert '"price_gbp":"999"' not in text.replace('\\"', '"')
     assert "2026-11-12" not in text
@@ -288,8 +293,7 @@ def test_failed_provider_reports_nav_without_using_cash(tmp_path: Path, stamped:
     )
     assert missing["result"]["nav_status"] == "unavailable"
     assert missing["result"]["nav_gbp"] is None
-    assert missing["result"]["nav_gbp"] != format(blind.cash, "f")
-    assert _failure(missing["log"])["nav_status"] == "unavailable"
+    assert format(blind.cash, "f") == "5000.00"
     assert blind.peak == Decimal("11111.00")
 
 

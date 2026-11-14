@@ -16,6 +16,7 @@ from pathlib import Path
 from sterling.research.grok.providers import MockGrokProvider
 from sterling.research.invest.adapter import LiveAllocationAdapter
 from sterling.research.invest.book import Book
+from sterling.research.invest.cash_rate import parse_sonia_csv
 from sterling.research.invest.daily import load_book
 from sterling.research.invest.decide import run_invest_week
 from sterling.research.invest.lanes import assert_lane
@@ -72,18 +73,22 @@ def main(argv: list[str] | None = None) -> int:
     mode = "simulated_clock" if provenance == "synthetic-fixture" or args.as_of or args.fixture else "forward"
     book = load_book(args.log) if args.log.is_file() else Book()
     prices = latest_prices(prints, as_of)
+    sonia, sonia_reason = _sonia(args)
     research = build_invest_snapshot(
         book=book,
         prints=prints,
         as_of=as_of,
         requested_tradable=set(prices) if prices else set(FUNDS),
+        sonia=sonia,
         provenance=provenance,
+        sonia_absence_reason=sonia_reason,
     )
     prompt = allocation_prompt(
         book=book,
         prints=prints,
         as_of=as_of,
         tradable=set(prices),
+        sonia=sonia,
         snapshot=research,
         provenance=provenance,
     )
@@ -106,6 +111,14 @@ def main(argv: list[str] | None = None) -> int:
         ).hexdigest()
         report["stale"] = ",".join(sorted(stale_names(research))) or "none"
         report["tradable"] = ",".join(sorted(tradable_names(research))) or "none"
+        sonia_block = research.get("sonia")
+        if isinstance(sonia_block, dict):
+            report["sonia_status"] = str(sonia_block.get("status"))
+            report["sonia_reason"] = str(sonia_block.get("reason") or "")
+            report["sonia_reference_date"] = str(sonia_block.get("reference_date") or "")
+            report["sonia_percent"] = str(sonia_block.get("sonia_percent") or "")
+            report["sonia_annual_decimal"] = str(sonia_block.get("annual_decimal") or "")
+            report["sonia_published_at"] = str(sonia_block.get("published_at") or "")
         print(format_dry_run_report(report))
         return 0
     result = run_invest_week(
@@ -137,27 +150,106 @@ def _observations(args: argparse.Namespace, as_of: datetime) -> tuple[list[tuple
     return _live_prints(args.cache or Path("evidence"), as_of), "supplied"
 
 
-def _cache_prints(cache: Path, as_of: datetime) -> list[tuple[str, date, Decimal, datetime]]:
-    """Local CSV rows. ``published_at`` is required and is never invented."""
-    prints: list[tuple[str, date, Decimal, datetime]] = []
+def _sonia(args: argparse.Namespace) -> tuple[tuple[tuple[date, Decimal], ...], str | None]:
+    if args.cache is None or args.fixture:
+        return (), None
+    path = args.cache / "boe_sonia.csv"
+    if not path.is_file():
+        return (), "sonia_cache_missing"
+    try:
+        rows = parse_sonia_csv(path.read_text(encoding="utf-8"))
+    except (ValueError, ArithmeticError) as exc:
+        raise ValueError(f"boe_sonia.csv is not a readable IUDSOIA file: {exc}") from exc
+    if not rows:
+        return (), "sonia_cache_empty"
+    return rows, None
+
+
+def _cache_prints(cache: Path, as_of: datetime) -> list[object]:
+    """Local CSV rows. Availability metadata is required and is never invented."""
+    from sterling.research.invest.availability import (
+        BASIS_ASSUMED,
+        BASIS_VERIFIED,
+        assumed_available_at,
+        exchange_close_at,
+    )
+    from sterling.research.invest.snapshot import PricePrint
+
+    prints: list[PricePrint] = []
     for ticker in FUNDS:
         path = cache / f"{ticker}.csv"
         if not path.is_file():
             continue
         with path.open(encoding="utf-8", newline="") as handle:
             for record in csv.DictReader(handle):
-                raw_time = (record.get("published_at") or "").strip()
-                if not raw_time:
-                    raise ValueError(f"{ticker}.csv is missing published_at")
-                published = datetime.fromisoformat(raw_time)
-                if published.tzinfo is None:
-                    raise ValueError(f"{ticker}.csv published_at needs a timezone")
-                if published > as_of:
-                    continue
-                prints.append((ticker, date.fromisoformat(record["date"][:10]), Decimal(record["close"]), published))
-    if not prints:
-        raise ValueError("cache has no price published at or before as-of")
-    return prints
+                prints.append(
+                    _one_cached_print(
+                        ticker,
+                        record,
+                        as_of,
+                        assumed_available_at,
+                        exchange_close_at,
+                        BASIS_VERIFIED,
+                        BASIS_ASSUMED,
+                        PricePrint,
+                    )
+                )
+    kept = [item for item in prints if item.available_at <= as_of]
+    if not kept:
+        raise ValueError("cache has no price available at or before as-of")
+    return kept
+
+
+def _one_cached_print(
+    ticker: str,
+    record: dict[str, str],
+    as_of: datetime,
+    assumed_available_at: object,
+    exchange_close_at: object,
+    verified: str,
+    assumed: str,
+    price_print: type,
+) -> object:
+    del as_of
+    session = date.fromisoformat(record["date"][:10])
+    price = Decimal(record["close"])
+    basis = (record.get("availability_basis") or "").strip()
+    verified_text = (record.get("provider_published_at") or record.get("published_at") or "").strip()
+    if basis == assumed:
+        available = assumed_available_at(session)  # type: ignore[operator]
+        provider_time = _aware(verified_text, f"{ticker}.csv provider_published_at") if verified_text else None
+        basis_name = assumed
+    elif basis in {"", verified} and verified_text:
+        provider_time = _aware(verified_text, f"{ticker}.csv published_at")
+        available = provider_time
+        basis_name = verified
+    else:
+        raise ValueError(f"{ticker}.csv needs provider_published_at or availability_basis=assumed-next-session")
+    close_text = (record.get("exchange_close_at") or "").strip()
+    close_at = _aware(close_text, f"{ticker}.csv exchange_close_at") if close_text else exchange_close_at(session)  # type: ignore[operator]
+    retrieved_text = (record.get("retrieved_at") or "").strip()
+    retrieved = _aware(retrieved_text, f"{ticker}.csv retrieved_at") if retrieved_text else None
+    return price_print(
+        ticker=ticker,
+        session=session,
+        price=price,
+        available_at=available,
+        exchange_close_at=close_at,
+        provider_published_at=provider_time,
+        retrieved_at=retrieved,
+        availability_basis=basis_name,
+        source=(record.get("source") or "local-csv").strip() or "local-csv",
+    )
+
+
+def _aware(value: str, label: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"{label} is not a timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{label} needs a timezone")
+    return parsed
 
 
 def _repository_evidence(path: Path) -> bool:

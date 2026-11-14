@@ -9,6 +9,7 @@ invents an observation.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
@@ -16,6 +17,13 @@ from sterling.research.costs import research_cost_model
 from sterling.research.errors import ResearchError
 from sterling.research.grok.context import PriceObservation, SoniaObservation, build_market_context
 from sterling.research.grok.schema import CashRate
+from sterling.research.invest.availability import (
+    BASIS_ASSUMED,
+    BASIS_SYNTHETIC,
+    BASIS_VERIFIED,
+    exchange_close_at,
+    require_aware,
+)
 from sterling.research.invest.book import Book, valuation_of
 from sterling.research.invest.cash_rate import CashRateQuote, cash_quote, sonia_available_at
 from sterling.research.invest.registration import STARTING_CASH_GBP
@@ -27,14 +35,64 @@ Print = tuple[str, date, Decimal, datetime]
 STALE_SESSIONS = 5
 
 
+@dataclass(frozen=True, slots=True)
+class PricePrint:
+    """One close and the clock that makes it usable."""
+
+    ticker: str
+    session: date
+    price: Decimal
+    available_at: datetime
+    exchange_close_at: datetime
+    provider_published_at: datetime | None
+    retrieved_at: datetime | None
+    availability_basis: str
+    source: str
+
+
+def as_price_print(item: PricePrint | Print, *, provenance: str) -> PricePrint:
+    """A 4-tuple timestamp is an explicit verified publication time, not a guess."""
+    if isinstance(item, PricePrint):
+        basis = BASIS_SYNTHETIC if provenance == "synthetic-fixture" else item.availability_basis
+        return PricePrint(
+            ticker=item.ticker,
+            session=item.session,
+            price=item.price,
+            available_at=require_aware(item.available_at, "available_at"),
+            exchange_close_at=require_aware(item.exchange_close_at, "exchange_close_at"),
+            provider_published_at=None
+            if item.provider_published_at is None
+            else require_aware(item.provider_published_at, "provider_published_at"),
+            retrieved_at=None if item.retrieved_at is None else require_aware(item.retrieved_at, "retrieved_at"),
+            availability_basis=basis,
+            source="synthetic-fixture" if provenance == "synthetic-fixture" else item.source,
+        )
+    ticker, session, price, published = item
+    stamped = require_aware(published, "published_at")
+    basis = BASIS_SYNTHETIC if provenance == "synthetic-fixture" else BASIS_VERIFIED
+    source = "synthetic-fixture" if provenance == "synthetic-fixture" else "supplied"
+    return PricePrint(
+        ticker=ticker,
+        session=session,
+        price=price,
+        available_at=stamped,
+        exchange_close_at=exchange_close_at(session),
+        provider_published_at=None if basis == BASIS_SYNTHETIC else stamped,
+        retrieved_at=None,
+        availability_basis=basis,
+        source=source,
+    )
+
+
 def build_invest_snapshot(
     *,
     book: Book,
-    prints: Sequence[Print],
+    prints: Sequence[Print | PricePrint],
     as_of: datetime,
     requested_tradable: set[str],
     sonia: Sequence[tuple[date, Decimal]] = (),
     provenance: str = "supplied",
+    sonia_absence_reason: str | None = None,
 ) -> dict[str, object]:
     """Structured snapshot. Values are strings and lists so the decision log can store it.
 
@@ -43,20 +101,17 @@ def build_invest_snapshot(
     fixture. A fixture timestamp is never labelled as a market source.
     """
     stamped = _utc(as_of)
-    visible = [
-        (ticker, session, price, _utc(published))
-        for ticker, session, price, published in prints
-        if ticker in FUNDS and price > 0 and _utc(published) <= stamped
-    ]
+    normalised = [as_price_print(item, provenance=provenance) for item in prints]
+    visible = [item for item in normalised if item.ticker in FUNDS and item.price > 0 and item.available_at <= stamped]
     observations = tuple(
         PriceObservation(
-            instrument_id=ticker,
-            session=session,
-            price=price,
-            published_at=published,
+            instrument_id=item.ticker,
+            session=item.session,
+            price=item.price,
+            published_at=item.available_at,
             source="paper-v2",
         )
-        for ticker, session, price, published in visible
+        for item in visible
     )
     sonia_rows = _sonia_observations(sonia, stamped)
     context = build_market_context(
@@ -65,10 +120,9 @@ def build_invest_snapshot(
         sonia=tuple(sonia_rows),
     )
     latest = _latest(visible)
-    prices = {ticker: item[2] for ticker, item in latest.items()}
+    prices = {item.ticker: item.price for item in latest.values()}
     valued = valuation_of(book, prices)
-    publication = "synthetic" if provenance == "synthetic-fixture" else "source-timestamp"
-    source_name = "synthetic-fixture" if provenance == "synthetic-fixture" else "supplied"
+    publication = _publication_summary(visible, provenance)
     quotes: list[dict[str, object]] = []
     for ticker in FUNDS:
         quantity = book.quantity(ticker)
@@ -77,10 +131,15 @@ def build_invest_snapshot(
             quotes.append(
                 {
                     "instrument_id": ticker,
+                    "available_at": None,
+                    "availability_basis": None,
+                    "exchange_close_at": None,
                     "price_gbp": None,
-                    "published_at": None,
-                    "session": None,
+                    "provider_published_at": None,
                     "publication": publication,
+                    "published_at": None,
+                    "retrieved_at": None,
+                    "session": None,
                     "source": None,
                     "staleness": "missing",
                     "tradable": "false",
@@ -90,25 +149,10 @@ def build_invest_snapshot(
                 }
             )
             continue
-        _ticker, session, price, published = quote
-        age = _weekdays(session, as_of.date())
+        age = _weekdays(quote.session, as_of.date())
         fresh = age <= STALE_SESSIONS
         tradable = fresh and ticker in requested_tradable
-        quotes.append(
-            {
-                "instrument_id": ticker,
-                "price_gbp": format(price, "f"),
-                "published_at": published.isoformat(),
-                "publication": publication,
-                "session": session.isoformat(),
-                "source": source_name,
-                "staleness": "fresh" if fresh else "stale",
-                "tradable": "true" if tradable else "false",
-                "units": format(quantity, "f"),
-                "value_gbp": format(quantize_money(quantity * price), "f"),
-                "weight": _weight_text(valued, ticker),
-            }
-        )
+        quotes.append(_quote_row(quote, quantity, valued, ticker, "fresh" if fresh else "stale", tradable))
     limits = load_research_limits()
     model = research_cost_model(as_of.date())
     rate = cash_quote(sonia, as_of.date(), as_of=stamped)
@@ -117,8 +161,9 @@ def build_invest_snapshot(
         "data_availability": {
             "as_of": stamped.isoformat(),
             "invented_observations": "none",
+            "availability_basis": publication,
             "publication": publication,
-            "rule": "published_at <= as_of",
+            "rule": "available_at <= as_of",
             "valuation": "complete" if valued is not None else "incomplete",
         },
         "indicators": [
@@ -132,14 +177,9 @@ def build_invest_snapshot(
         ],
         "portfolio": _portfolio(book, quotes, valued),
         "price_history": [
-            {
-                "instrument_id": ticker,
-                "price_gbp": format(price, "f"),
-                "published_at": published.isoformat(),
-                "session": session.isoformat(),
-            }
-            for ticker, session, price, published in sorted(visible, key=lambda item: (item[0], item[1], item[3]))
+            _history_row(item) for item in sorted(visible, key=lambda item: (item.ticker, item.session, item.available_at))
         ],
+        "session_counts": {ticker: sum(1 for item in visible if item.ticker == ticker) for ticker in FUNDS},
         "risk_constraints": {
             "cash_weight_max": format(limits.cash_max, "f"),
             "cash_weight_min": format(limits.cash_min, "f"),
@@ -154,7 +194,7 @@ def build_invest_snapshot(
             "policy": "research-risk-v0",
             "status": limits.status,
         },
-        "sonia": _sonia_block(rate, context.cash_rate),
+        "sonia": _sonia_block(rate, context.cash_rate, sonia_absence_reason if rate is None else None),
         "transaction_cost_model": {
             "commission_bps": format(model.commission_bps, "f"),
             "commission_flat_gbp": format(model.commission_flat_gbp, "f"),
@@ -243,13 +283,75 @@ def _quotes(snapshot: dict[str, object]) -> list[dict[str, object]]:
     return [row for row in holdings if isinstance(row, dict)]
 
 
-def _latest(prints: Sequence[tuple[str, date, Decimal, datetime]]) -> dict[str, tuple[str, date, Decimal, datetime]]:
-    chosen: dict[str, tuple[str, date, Decimal, datetime]] = {}
+def _latest(prints: Sequence[PricePrint]) -> dict[str, PricePrint]:
+    chosen: dict[str, PricePrint] = {}
     for item in prints:
-        current = chosen.get(item[0])
-        if current is None or item[1] > current[1] or (item[1] == current[1] and item[3] >= current[3]):
-            chosen[item[0]] = item
+        current = chosen.get(item.ticker)
+        if (
+            current is None
+            or item.session > current.session
+            or (item.session == current.session and item.available_at >= current.available_at)
+        ):
+            chosen[item.ticker] = item
     return chosen
+
+
+def _iso(moment: datetime | None) -> str | None:
+    if moment is None:
+        return None
+    return moment.isoformat()
+
+
+def _quote_row(
+    quote: PricePrint,
+    quantity: Decimal,
+    valued: dict[str, Decimal] | None,
+    ticker: str,
+    staleness: str,
+    tradable: bool,
+) -> dict[str, object]:
+    return {
+        "available_at": quote.available_at.isoformat(),
+        "availability_basis": quote.availability_basis,
+        "exchange_close_at": quote.exchange_close_at.isoformat(),
+        "instrument_id": ticker,
+        "price_gbp": format(quote.price, "f"),
+        "provider_published_at": _iso(quote.provider_published_at),
+        "publication": quote.availability_basis,
+        "published_at": quote.available_at.isoformat(),
+        "retrieved_at": _iso(quote.retrieved_at),
+        "session": quote.session.isoformat(),
+        "source": quote.source,
+        "staleness": staleness,
+        "tradable": "true" if tradable else "false",
+        "units": format(quantity, "f"),
+        "value_gbp": format(quantize_money(quantity * quote.price), "f"),
+        "weight": _weight_text(valued, ticker),
+    }
+
+
+def _history_row(item: PricePrint) -> dict[str, object]:
+    return {
+        "available_at": item.available_at.isoformat(),
+        "availability_basis": item.availability_basis,
+        "exchange_close_at": item.exchange_close_at.isoformat(),
+        "instrument_id": item.ticker,
+        "price_gbp": format(item.price, "f"),
+        "provider_published_at": _iso(item.provider_published_at),
+        "published_at": item.available_at.isoformat(),
+        "retrieved_at": _iso(item.retrieved_at),
+        "session": item.session.isoformat(),
+        "source": item.source,
+    }
+
+
+def _publication_summary(visible: Sequence[PricePrint], provenance: str) -> str:
+    if provenance == "synthetic-fixture":
+        return BASIS_SYNTHETIC
+    bases = {item.availability_basis for item in visible}
+    if BASIS_ASSUMED in bases:
+        return BASIS_ASSUMED
+    return BASIS_VERIFIED
 
 
 def _sonia_observations(
@@ -271,7 +373,7 @@ def _sonia_observations(
     return rows
 
 
-def _sonia_block(rate: CashRateQuote | None, wholesale: CashRate | None) -> dict[str, object]:
+def _sonia_block(rate: CashRateQuote | None, wholesale: CashRate | None, absence_reason: str | None) -> dict[str, object]:
     published = {
         "publication_lag": "09:00 Europe/London on the next XLON session",
         "series": "IUDSOIA",
@@ -283,6 +385,7 @@ def _sonia_block(rate: CashRateQuote | None, wholesale: CashRate | None) -> dict
         return {
             **published,
             "annual_decimal": None,
+            "reason": absence_reason or "sonia_not_yet_published",
             "published_at": None,
             "reference_date": None,
             "sonia_percent": None,

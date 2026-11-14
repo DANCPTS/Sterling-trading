@@ -494,6 +494,12 @@ def format_dry_run_report(report: Mapping[str, object]) -> str:
         "prompt_version",
         "prompt_sha256",
         "schema_sha256",
+        "sonia_status",
+        "sonia_reason",
+        "sonia_reference_date",
+        "sonia_percent",
+        "sonia_annual_decimal",
+        "sonia_published_at",
     ):
         if key in report:
             lines.append(f"{key}: {report[key]}")

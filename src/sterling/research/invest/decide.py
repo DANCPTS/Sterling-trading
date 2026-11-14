@@ -160,7 +160,7 @@ def run_invest_week(
     if usage:
         moment = _append(log, moment, "model_usage", usage)
     moment = _append(log, moment, "decision", fields)
-    reported = nav if nav is not None else book.cash
+    reported_nav, nav_status = _nav_report(book, point_prices)
     _append(
         log,
         moment,
@@ -170,7 +170,8 @@ def run_invest_week(
     return {
         "execution_permission": EXECUTION_PERMISSION,
         "gate": gate,
-        "nav_gbp": format(reported, "f"),
+        "nav_gbp": reported_nav,
+        "nav_status": nav_status,
         "provider_calls": calls,
         "status": "decided",
         "week_key": week,
@@ -428,10 +429,16 @@ def _market_snapshot(
             positions.append(PaperPosition(ticker, quantity, quantize_money(quantity * price)))
     if not quotes:
         return None
-    nav = quantize_money(book.cash + sum((item.market_value_gbp for item in positions), ZERO))
-    if nav <= 0:
+    valued = valuation_of(book, prices)
+    if valued is None or valued["nav"] <= 0:
         return None
-    return MarketSnapshot(as_of=stamped, quotes=tuple(quotes), positions=tuple(positions), nav_gbp=nav, universe=FUNDS)
+    return MarketSnapshot(
+        as_of=stamped,
+        quotes=tuple(quotes),
+        positions=tuple(positions),
+        nav_gbp=valued["nav"],
+        universe=FUNDS,
+    )
 
 
 def research_holdings(research: dict[str, object]) -> list[dict[str, object]]:

@@ -71,8 +71,8 @@ def test_snapshot_drops_future_prices_and_unpublished_sonia(stamped: None) -> No
     assert "999" not in text
     assert "9.00" not in text
     assert base["data_availability"]["invented_observations"] == "none"
-    assert base["data_availability"]["rule"] == "published_at <= as_of"
-    assert base["data_availability"]["publication"] == "source-timestamp"
+    assert base["data_availability"]["rule"] == "available_at <= as_of"
+    assert base["data_availability"]["publication"] == "source-verified"
     assert base["data_availability"]["valuation"] == "complete"
     holdings = {row["instrument_id"]: row for row in base["portfolio"]["holdings"]}
     assert holdings["IGLT"]["staleness"] == "stale"
@@ -148,7 +148,7 @@ def test_accepted_allocation_sets_pending_and_stores_the_snapshot(tmp_path: Path
     assert decision["eligible_session"] == "2026-11-03"
     snapshot = decision["research_snapshot"]
     assert snapshot["portfolio"]["cash_gbp"] == "10000.00"
-    assert snapshot["data_availability"]["rule"] == "published_at <= as_of"
+    assert snapshot["data_availability"]["rule"] == "available_at <= as_of"
     assert "999" not in json.dumps(snapshot)
 
 
