@@ -132,7 +132,11 @@ def test_planted_key_blocks_export_and_stays_off_argv(stamped: None, tmp_path: P
         assert KEY not in clean_run.stdout
         assert KEY not in clean_run.stderr
         assert KEY.encode("utf-8") not in argv_log.read_bytes()
+        store_present = Path("/cursor/stores/self").is_dir()
         for path in _destinations(clean_name):
+            if path.parent == Path("/cursor/stores/self") and not store_present:
+                assert not path.exists()
+                continue
             assert path.is_dir()
             for item in path.rglob("*"):
                 if item.is_file():
