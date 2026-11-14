@@ -29,40 +29,61 @@ _FIELDS = {
     "change_justification",
 }
 
-ALLOCATION_SCHEMA: dict[str, object] = {
-    "additionalProperties": False,
-    "properties": {
-        "change_justification": {"type": "string"},
-        "confidence": {"type": "string"},
-        "decision": {"enum": list(DECISIONS), "type": "string"},
-        "identified_risks": {"items": {"type": "string"}, "maxItems": MAX_RISKS, "minItems": 1, "type": "array"},
-        "model_id": {"type": "string"},
-        "portfolio_reasoning": {"type": "string"},
-        "reasons": {
-            "additionalProperties": False,
-            "properties": {name: {"type": "string"} for name in FUNDS},
-            "required": list(FUNDS),
-            "type": "object",
+
+def allocation_schema(model_id: str) -> dict[str, object]:
+    """Strict response schema for one configured model.
+
+    The request uses a one-value enum rather than JSON Schema ``const``.
+    The strict structured-output subset this client sends is not assumed to
+    accept ``const``. The parser still rejects any other id and does not
+    rewrite the raw text.
+    """
+    if not isinstance(model_id, str) or not model_id.strip() or len(model_id) > 80 or "\x00" in model_id:
+        raise ResearchError("allocation schema needs a configured model id")
+    configured = model_id.strip()
+    return {
+        "additionalProperties": False,
+        "properties": {
+            "change_justification": {"type": "string"},
+            "confidence": {"type": "string"},
+            "decision": {"enum": list(DECISIONS), "type": "string"},
+            "identified_risks": {"items": {"type": "string"}, "maxItems": MAX_RISKS, "minItems": 1, "type": "array"},
+            "model_id": {"enum": [configured], "type": "string"},
+            "portfolio_reasoning": {"type": "string"},
+            "reasons": {
+                "additionalProperties": False,
+                "properties": {name: {"type": "string"} for name in FUNDS},
+                "required": list(FUNDS),
+                "type": "object",
+            },
+            "weights": {
+                "additionalProperties": False,
+                "properties": {name: {"type": "string"} for name in NAMES},
+                "required": list(NAMES),
+                "type": "object",
+            },
         },
-        "weights": {
-            "additionalProperties": False,
-            "properties": {name: {"type": "string"} for name in NAMES},
-            "required": list(NAMES),
-            "type": "object",
-        },
-    },
-    "required": [
-        "model_id",
-        "confidence",
-        "decision",
-        "weights",
-        "reasons",
-        "portfolio_reasoning",
-        "identified_risks",
-        "change_justification",
-    ],
-    "type": "object",
-}
+        "required": [
+            "model_id",
+            "confidence",
+            "decision",
+            "weights",
+            "reasons",
+            "portfolio_reasoning",
+            "identified_risks",
+            "change_justification",
+        ],
+        "type": "object",
+    }
+
+
+def _default_allocation_schema() -> dict[str, object]:
+    from sterling.pilot_config import CONFIGURED_MODEL
+
+    return allocation_schema(CONFIGURED_MODEL)
+
+
+ALLOCATION_SCHEMA = _default_allocation_schema()
 
 
 @dataclass(frozen=True, slots=True)

@@ -8,12 +8,13 @@ from collections.abc import Sequence
 from datetime import date, datetime
 from decimal import Decimal
 
+from sterling.pilot_config import CONFIGURED_MODEL
 from sterling.research.invest.book import Book
 from sterling.research.invest.registration import NO_TRADE_BAND, SUM_TOLERANCE
-from sterling.research.invest.schema import ALLOCATION_SCHEMA, CASH, FUNDS
+from sterling.research.invest.schema import CASH, FUNDS, allocation_schema
 from sterling.research.invest.snapshot import PricePrint, Print, build_invest_snapshot
 
-PROMPT_VERSION = "paper-v2-allocation-2026-11-14"
+PROMPT_VERSION = "paper-v2-allocation-2026-11-14-model-id"
 PROJECTION_VERSION = "paper-v2-prompt-projection-2026-11-14"
 INDICATOR_DEFINITIONS = {
     "drawdown": "latest close versus the peak inside the available history",
@@ -37,6 +38,7 @@ def allocation_prompt(
     sonia: Sequence[tuple[date, Decimal]] = (),
     snapshot: dict[str, object] | None = None,
     provenance: str = "supplied",
+    model_id: str = CONFIGURED_MODEL,
 ) -> str:
     """JSON the weekly job sends. Prints available after ``as_of`` are omitted.
 
@@ -60,7 +62,7 @@ def allocation_prompt(
             "decision": "ALLOCATE, HOLD, or NO_TRADE",
             "do_not_send": ["planned_risk", "size", "any hash field"],
             "identified_risks": "one or more short strings",
-            "model_id": "the configured model name, not a different model",
+            "model_id": model_id,
             "no_trade_band": format(NO_TRADE_BAND, "f"),
             "portfolio_reasoning": "one portfolio-level explanation",
             "sum_tolerance": format(SUM_TOLERANCE, "f"),
@@ -70,10 +72,10 @@ def allocation_prompt(
             "Return only the allocation JSON. HOLD and NO_TRADE keep the current book. "
             "Use prices and indicators whose published_at is at or before the decision time. "
             "A missing or stale fund is not tradable. Do not invent a price, a rate, or a hash. "
-            "model_id must be the configured model."
+            f'Return model_id exactly as "{model_id}".'
         ),
         "model_view": project_snapshot(snapshot),
-        "output_schema": ALLOCATION_SCHEMA,
+        "output_schema": allocation_schema(model_id),
         "prompt_version": PROMPT_VERSION,
         "task": "paper-v2 allocation",
         "universe": list(FUNDS),

@@ -186,7 +186,10 @@ def test_retries_timeout_malformed_oversized_and_redaction(monkeypatch: pytest.M
     )
     _content, rich = _client(_Fake([reasoning])).complete("hello")
     assert rich.reasoning_tokens == 2
-    assert rich.cost_in_usd_ticks == 1_000_000
+    assert rich.cost_in_usd_ticks == 100_000_000
+    from sterling.pilot_config import ticks_to_usd
+
+    assert ticks_to_usd(67_656_000) == Decimal("0.0067656")
 
     log = ProposalLog(tmp_path / "forward.jsonl")
     log.create(now=datetime(2024, 6, 1, tzinfo=UTC))

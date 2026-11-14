@@ -18,10 +18,12 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
+from sterling.pilot_config import CONFIGURED_MODEL as DEFAULT_MODEL
+from sterling.pilot_config import USD_TICKS
+
 API_HOST = "api.x.ai"
 API_PATH = "/v1/chat/completions"
 API_URL = "https://api.x.ai/v1/chat/completions"
-DEFAULT_MODEL = "grok-4.3"
 ENV_KEY = "XAI_API_KEY"
 # Any HTTP response may already have been billed, including 429. It is never
 # retried. Only a connection refusal before the request is sent may be
@@ -43,7 +45,6 @@ US_REGIONAL_ENDPOINT_MULTIPLIER = Decimal("1.1")
 PILOT_COST_CEILING_USD = Decimal("0.25")
 PRICE_VERIFIED_ON = "2026-11-13"
 RETRIES_AFTER_SEND = 0
-_TICKS = Decimal("100000000")
 
 PROPOSAL_SCHEMA: dict[str, object] = {
     "additionalProperties": False,
@@ -487,7 +488,7 @@ def _cost_ticks(usage: Mapping[str, object]) -> int | None:
         return None
     if not amount.is_finite() or amount < 0:
         return None
-    return int((amount * _TICKS).to_integral_value())
+    return int((amount * Decimal(USD_TICKS)).to_integral_value())
 
 
 def _int_field(value: object) -> int | None:

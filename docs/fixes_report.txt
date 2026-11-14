@@ -1,0 +1,27 @@
+Post-first-call fixes. The paid-call bundle was not rewritten.
+
+Historical, first paid call, prompt version paper-v2-allocation-2026-11-14:
+  canonical d5a5138b87ea47a02955b4f21858752b9d3c94e75f22f61332e30eca68e48ee4
+  prompt    d3c49a9b59033c88fb0410e5c4d35f800e19df6d63e9e8d6f43675eb660b7cfb
+  schema    514b022e80bde027477fe0b9cc5027b8692abfa86199976c0f77abd757f82931
+
+After the model-id prompt and schema change, prompt version paper-v2-allocation-2026-11-14-model-id.
+The canonical snapshot hash is unchanged. New request hashes from the same cache and the same as_of:
+  prompt cfa3e75aaa3f5d8e92e04d23af7991ececeb53f0efebfbc5c678988a96a18ceb
+  schema 01ca0220802a34fb725fb3e01bf93e17d67ec23f38ac0d78efcabad4e9be8d8d
+
+model_id
+The response schema now sends a one-value enum taken from CONFIGURED_MODEL (grok-4.3). JSON Schema const is not assumed to be accepted by the strict structured-output subset, so it is not sent. The prompt says to return that exact id. The parser still rejects any other id and does not rewrite the raw text. The HTTP model field remains a separate check.
+
+Examples:
+  model_id grok-4.3 and HOLD at 100% cash -> explicit_hold
+  model_id paper-v2-allocation -> model_id_mismatch, raw text kept
+  missing model_id -> malformed_json
+  JSON id grok-4.3 but HTTP model grok-other -> provider_model_mismatch
+  the stored first-call reply -> still model_id_mismatch
+  that reply with only model_id changed to grok-4.3, in a temporary log -> explicit_hold
+
+Cost
+67,656,000 provider ticks / 10,000,000,000 = 0.0067656 USD.
+The earlier report divided by 100,000,000 and printed 0.67656 USD. That note was wrong. The stored tick integer is unchanged.
+The local $0.25 figure remains a pre-call estimate guard, not a billing cap. The pre-call estimate for that request was 0.0075375 USD.

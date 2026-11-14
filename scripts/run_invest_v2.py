@@ -22,9 +22,9 @@ from sterling.research.invest.decide import run_invest_week
 from sterling.research.invest.lanes import assert_lane
 from sterling.research.invest.prompt import PROMPT_VERSION, allocation_prompt, latest_prices
 from sterling.research.invest.recorded import RecordedAllocationProvider, load_recorded_response
-from sterling.research.invest.schema import ALLOCATION_SCHEMA, FUNDS
+from sterling.research.invest.schema import FUNDS, allocation_schema
 from sterling.research.invest.snapshot import build_invest_snapshot, missing_names, stale_names, tradable_names
-from sterling.xai_client import XaiClient, format_dry_run_report
+from sterling.xai_client import DEFAULT_MODEL, XaiClient, format_dry_run_report
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -96,7 +96,8 @@ def main(argv: list[str] | None = None) -> int:
         print("refusing a paid xAI call on synthetic-fixture prices. No request was sent.", file=sys.stderr)
         return 2
     if args.dry_run:
-        report = XaiClient(enabled=False, dry_run=True, model="grok-4.3").dry_run_report(prompt, schema=ALLOCATION_SCHEMA)
+        schema = allocation_schema(DEFAULT_MODEL)
+        report = XaiClient(enabled=False, dry_run=True, model=DEFAULT_MODEL).dry_run_report(prompt, schema=schema)
         report["data_source"] = provenance
         report["missing"] = ",".join(sorted(missing_names(research))) or "none"
         report["prompt_sha256"] = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
@@ -107,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
             published = str(availability.get("publication") or "")
         report["publication"] = published
         report["schema_sha256"] = hashlib.sha256(
-            json.dumps(ALLOCATION_SCHEMA, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            json.dumps(schema, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
         report["stale"] = ",".join(sorted(stale_names(research))) or "none"
         report["tradable"] = ",".join(sorted(tradable_names(research))) or "none"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sterling.pilot_config import CONFIGURED_MODEL
 from sterling.research.fx.grok_forward import require_utc
 from sterling.research.grok.providers import ProviderEnvelope
 from sterling.research.grok.schema import MarketSnapshot
@@ -12,7 +13,7 @@ from sterling.research.grok.schema import MarketSnapshot
 class RecordedAllocationProvider:
     """One recorded or synthetic JSON reply. The model id is the caller's, not the file's claim."""
 
-    def __init__(self, raw_response: str, *, model_id: str = "grok-4.3") -> None:
+    def __init__(self, raw_response: str, *, model_id: str = CONFIGURED_MODEL) -> None:
         if not raw_response.strip():
             raise ValueError("recorded allocation is empty")
         self._raw = raw_response

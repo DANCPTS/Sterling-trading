@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from sterling.pilot_config import CONFIGURED_MODEL
 from sterling.research.grok.providers import ProviderEnvelope
 from sterling.research.grok.schema import MarketSnapshot
-from sterling.research.invest.schema import ALLOCATION_SCHEMA
+from sterling.research.invest.schema import allocation_schema
 
 
 class LiveAllocationAdapter:
@@ -19,10 +20,10 @@ class LiveAllocationAdapter:
         self.last_usage: dict[str, object] | None = None
 
     def complete(self, snapshot: MarketSnapshot, *, prompt: str) -> ProviderEnvelope:
-        content, usage = self._client.complete(prompt, schema=ALLOCATION_SCHEMA)  # type: ignore[attr-defined]
+        model = str(getattr(self._client, "model", CONFIGURED_MODEL))
+        content, usage = self._client.complete(prompt, schema=allocation_schema(model))  # type: ignore[attr-defined]
         recorded = usage.as_log()
         self.last_usage = recorded if isinstance(recorded, dict) else None
-        model = str(getattr(self._client, "model", "grok-4.3"))
         reported = getattr(usage, "provider_reported_model", None)
         reported_model = reported if isinstance(reported, str) and reported.strip() else None
         return ProviderEnvelope(
