@@ -153,9 +153,13 @@ def run_invest_week(
             "provider_failure",
             _failure_body(week, "model_identity", "provider_reported_model_disagrees", "possibly_sent_or_billed"),
         )
+    if envelope is not None:
+        fields["raw_reply"] = envelope.raw_response
+        fields["raw_response_sha256"] = hashlib.sha256(envelope.raw_response.encode("utf-8")).hexdigest()
     if gate != "accepted":
         fields["disposition"] = "HOLD"
-        fields["raw_reply"] = raw
+        if envelope is None:
+            fields["raw_reply"] = raw
     moment = as_of
     if usage:
         moment = _append(log, moment, "model_usage", usage)

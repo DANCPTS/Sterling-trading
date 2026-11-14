@@ -140,6 +140,8 @@ class UsageRecord:
     )
     provider_request_id: str | None = None
     provider_reported_model: str | None = None
+    http_body: str | None = None
+    assistant_content: str | None = None
 
     def as_log(self) -> dict[str, object]:
         fields: dict[str, object] = {
@@ -160,6 +162,12 @@ class UsageRecord:
         if self.provider_reported_model is not None:
             fields["provider_reported_model"] = self.provider_reported_model
             fields["provider_model_identity"] = "provider_reported"
+        if self.http_body is not None:
+            fields["http_body"] = self.http_body
+            fields["http_body_sha256"] = hashlib.sha256(self.http_body.encode("utf-8")).hexdigest()
+        if self.assistant_content is not None:
+            fields["assistant_content"] = self.assistant_content
+            fields["raw_response_sha256"] = hashlib.sha256(self.assistant_content.encode("utf-8")).hexdigest()
         return fields
 
 
@@ -362,6 +370,12 @@ class XaiClient:
             except (XaiTimeout, TimeoutError) as exc:
                 self.calls_sent += 1
                 raise XaiTimeout(_redact("xAI read timed out after send. Not retried.", key)) from exc
+            except OSError:
+                self.calls_sent += 1
+                raise XaiError(
+                    "xAI connection dropped after send. Not retried.",
+                    sent_state="possibly_sent_or_billed",
+                ) from None
             self.calls_sent += 1
             return response
         raise XaiError(
@@ -376,7 +390,7 @@ class XaiClient:
 
 
 def _parse_success(response: HttpResponse, *, key: str, request_hash: str, model: str, latency_ms: int) -> tuple[str, UsageRecord]:
-    text = response.body.decode("utf-8", errors="replace")
+    text = _redact_stored(response.body.decode("utf-8", errors="replace"), key)
     usage = UsageRecord(
         request_hash=request_hash,
         model=model,
@@ -387,6 +401,7 @@ def _parse_success(response: HttpResponse, *, key: str, request_hash: str, model
         cost_in_usd_ticks=None,
         latency_ms=latency_ms,
         http_status=response.status,
+        http_body=text,
     )
     if response.status != 200:
         raise XaiError(_redact(f"xAI HTTP {response.status}. {_snippet(text, key)}", key), usage)
@@ -411,6 +426,7 @@ def _parse_success(response: HttpResponse, *, key: str, request_hash: str, model
             http_status=response.status,
             provider_request_id=request_id,
             provider_reported_model=_reported_model(payload),
+            http_body=text,
         )
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -418,9 +434,24 @@ def _parse_success(response: HttpResponse, *, key: str, request_hash: str, model
     message = choices[0].get("message")
     if not isinstance(message, dict) or not isinstance(message.get("content"), str):
         raise XaiError("xAI response had no message content.", usage)
-    content = message["content"]
+    content = _redact_stored(message["content"], key)
     if len(content) > MAX_CONTENT_CHARS:
         raise XaiError("xAI response exceeded the size cap.", usage)
+    usage = UsageRecord(
+        request_hash=usage.request_hash,
+        model=usage.model,
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        reasoning_tokens=usage.reasoning_tokens,
+        cached_tokens=usage.cached_tokens,
+        cost_in_usd_ticks=usage.cost_in_usd_ticks,
+        latency_ms=usage.latency_ms,
+        http_status=usage.http_status,
+        provider_request_id=usage.provider_request_id,
+        provider_reported_model=usage.provider_reported_model,
+        http_body=text,
+        assistant_content=content,
+    )
     return content, usage
 
 
@@ -562,3 +593,10 @@ def _redact(text: str, key: str) -> str:
     if key:
         text = text.replace(key, "[redacted]")
     return text.replace("Bearer ", "Bearer [redacted-prefix] ")
+
+
+def _redact_stored(text: str, key: str) -> str:
+    """Body kept in the log. The key and header names are not kept with it."""
+    cleaned = _redact(text, key)
+    cleaned = cleaned.replace("Authorization", "[redacted-header]")
+    return cleaned.replace("Bearer", "[redacted-header]")

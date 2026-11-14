@@ -16,6 +16,7 @@ from sterling.xai_client import (
     API_PATH,
     API_URL,
     ENV_KEY,
+    RETRIES_AFTER_SEND,
     HttpResponse,
     HttpsTransport,
     NotSent,
@@ -120,6 +121,7 @@ def test_model_is_not_required_to_echo_hashes() -> None:
 
 
 def test_retries_timeout_malformed_oversized_and_redaction(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    assert RETRIES_AFTER_SEND == 0
     monkeypatch.setenv(ENV_KEY, KEY)
     sleeps: list[float] = []
     denied_rate = _Fake([HttpResponse(status=429, body=f"slow {KEY}".encode()), _ok("{}")])
@@ -152,7 +154,17 @@ def test_retries_timeout_malformed_oversized_and_redaction(monkeypatch: pytest.M
     with pytest.raises(XaiTimeout) as timeout:
         _client(timed).complete("hello")
     assert len(timed.calls) == 1
+    assert timeout.value.sent_state == "possibly_sent_or_billed"
     assert KEY not in str(timeout.value)
+
+    dropped = _Fake(error=ConnectionResetError(f"reset {KEY}"))
+    with pytest.raises(XaiError) as reset:
+        client = _client(dropped, max_attempts=3)
+        client.complete("hello")
+    assert len(dropped.calls) == 1
+    assert client.calls_sent == 1
+    assert reset.value.sent_state == "possibly_sent_or_billed"
+    assert KEY not in str(reset.value)
 
     broken = _Fake([HttpResponse(status=200, body=b"not-json")])
     with pytest.raises(XaiError, match="not JSON"):
