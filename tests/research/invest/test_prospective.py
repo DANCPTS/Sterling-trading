@@ -80,7 +80,7 @@ def _friday(tmp_path: Path) -> Path:
         session="2026-11-13",
         published="2026-11-13T16:30:00+00:00",
         retrieved="2026-11-13T16:30:00+00:00",
-        sonia="12 Nov 2026,3.9845",
+        sonia="11 Nov 2026,3.9845",
         sonia_retrieved="2026-11-13T16:30:00+00:00",
         name="friday",
     )
@@ -92,7 +92,7 @@ def _monday(tmp_path: Path) -> Path:
         session="2026-11-16",
         published="2026-11-16T16:20:00+00:00",
         retrieved="2026-11-16T16:25:00+00:00",
-        sonia="12 Nov 2026,3.9845\n13 Nov 2026,4.0000",
+        sonia="12 Nov 2026,3.9845",
         sonia_retrieved="2026-11-16T16:25:00+00:00",
         name="monday",
     )
@@ -144,7 +144,7 @@ def test_valid_clock_records_prospective_provenance(lane: None, tmp_path: Path) 
     interest = next(row for row in rows if row["record_type"] == "cash_interest")
     rate = retail_annual_decimal(Decimal("3.9845"))
     assert interest["amount_gbp"] == format(quantize_money(Decimal("10000.00") * rate / Decimal(365)), "f")
-    assert interest["published_on"] == "2026-11-12"
+    assert interest["published_on"] == "2026-11-11"
     assert interest["sonia_percent"] == "3.9845"
     manifest = (root / "manifests" / "LATEST").read_text(encoding="utf-8").strip()
     assert hashlib.sha256(log.read_bytes()).hexdigest() == manifest
@@ -162,13 +162,13 @@ def test_weekend_accrues_each_calendar_day_once(lane: None, tmp_path: Path) -> N
     sessions = [row["session"] for row in interest]
     assert sessions == ["2026-11-13", "2026-11-14", "2026-11-15", "2026-11-16"]
     assert sessions.count("2026-11-13") == 1
-    rate = retail_annual_decimal(Decimal("4.0000"))
+    rate = retail_annual_decimal(Decimal("3.9845"))
     cash = Decimal("10000.95")
     for row, day in zip(interest[1:], ("2026-11-14", "2026-11-15", "2026-11-16"), strict=True):
         amount = quantize_money(cash * rate / Decimal(365))
         assert row["session"] == day
         assert row["amount_gbp"] == format(amount, "f")
-        assert row["published_on"] == "2026-11-13"
+        assert row["published_on"] == "2026-11-12"
         cash = quantize_money(cash + amount)
     valuation = [row for row in ProposalLog(log).records() if row["record_type"] == "valuation"][-1]
     assert Decimal(str(valuation["nav_gbp"])) == cash
@@ -349,7 +349,7 @@ def test_live_clock_can_be_prospective_and_cannot_be_relabelled(
     lane: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     del lane
-    frozen = "2026-11-17T10:05:00+00:00"
+    frozen = "2026-11-18T10:05:00+00:00"
     monkeypatch.setattr(
         "sterling.research.invest.prospective._system_now",
         lambda: __import__("datetime").datetime.fromisoformat(frozen),

@@ -383,7 +383,7 @@ def _sonia_observations(
 
 def _sonia_block(rate: CashRateQuote | None, wholesale: CashRate | None, absence_reason: str | None) -> dict[str, object]:
     published = {
-        "publication_lag": "10:00 Europe/London on the next XLON session via the Interactive Statistical Database",
+        "publication_lag": "IADB by 10:00 Europe/London on the XLON day after the 09:00 distributor publication",
         "series": "IUDSOIA",
         "source": "boe-iadb",
         "wholesale_annual_decimal": None if wholesale is None else format(wholesale.annual_rate, "f"),

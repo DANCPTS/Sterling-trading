@@ -40,7 +40,7 @@ def test_dashboard_formats_money_and_percentages() -> None:
 
 
 def test_sonia_ignores_a_later_print() -> None:
-    quote = cash_quote(SONIA, WHEN.date())
+    quote = cash_quote(SONIA, WHEN.date(), as_of=WHEN + timedelta(days=1))
     assert quote is not None
     assert quote.published_on == WHEN.date() - timedelta(days=1)
     assert quote.sonia_percent == Decimal("4.00")
@@ -124,7 +124,7 @@ def test_missing_first_sonia_day_is_backfilled_once(tmp_path: Path, stamped: Non
     del stamped
     log = tmp_path / "interest.jsonl"
     thursday = date(2026, 11, 12)
-    friday = date(2026, 11, 13)
+    monday = date(2026, 11, 16)
     series = ((thursday, Decimal("4.00")), (date(2026, 11, 20), Decimal("9.00")))
     _mark(log, thursday, datetime(2026, 11, 12, 16, 30, tzinfo=ZoneInfo("Europe/London")), series)
     waiting = log.read_text(encoding="utf-8")
@@ -135,15 +135,21 @@ def test_missing_first_sonia_day_is_backfilled_once(tmp_path: Path, stamped: Non
     again = _mark(log, thursday, datetime(2026, 11, 12, 18, 0, tzinfo=ZoneInfo("Europe/London")), series)
     assert again["status"] == "noop"
     assert log.read_text(encoding="utf-8").count('"record_type":"interest_pending"') == 1
-    _mark(log, friday, datetime(2026, 11, 13, 16, 30, tzinfo=ZoneInfo("Europe/London")), series)
+    _mark(log, monday, datetime(2026, 11, 16, 16, 30, tzinfo=ZoneInfo("Europe/London")), series)
     amounts = _interest_rows(log)
-    assert [day for day, _amount, _rate in amounts] == ["2026-11-12", "2026-11-13"]
-    assert _accrued(Decimal("10000.00"), [Decimal("0.035"), Decimal("0.035")]) == sum(amount for _day, amount, _rate in amounts)
+    assert [day for day, _amount, _rate in amounts] == [
+        "2026-11-12",
+        "2026-11-13",
+        "2026-11-14",
+        "2026-11-15",
+        "2026-11-16",
+    ]
+    assert _accrued(Decimal("10000.00"), [Decimal("0.035")] * 5) == sum(amount for _day, amount, _rate in amounts)
     book = load_book(log)
     assert book.cash == Decimal("10000.00") + sum(amount for _day, amount, _rate in amounts)
-    assert book.accrued_through == friday
+    assert book.accrued_through == monday
     assert all(rate == Decimal("0.035") for _day, _amount, rate in amounts)
-    rerun = _mark(log, friday, datetime(2026, 11, 13, 18, 0, tzinfo=ZoneInfo("Europe/London")), series)
+    rerun = _mark(log, monday, datetime(2026, 11, 16, 18, 0, tzinfo=ZoneInfo("Europe/London")), series)
     assert rerun["status"] == "noop"
     assert _interest_rows(log) == amounts
 
@@ -159,19 +165,26 @@ def test_sonia_gap_before_a_later_accrual_is_backfilled_once(tmp_path: Path, sta
     assert '"record_type":"interest_pending"' in held
     assert '"status":"pending"' in held
     assert load_book(log).accrued_through is None
-    _mark(log, date(2026, 11, 13), datetime(2026, 11, 13, 16, 30, tzinfo=london), early)
+    _mark(log, date(2026, 11, 16), datetime(2026, 11, 16, 16, 30, tzinfo=london), early)
     first = _interest_rows(log)
-    assert [day for day, _amount, _rate in first] == ["2026-11-12", "2026-11-13"]
+    assert [day for day, _amount, _rate in first] == [
+        "2026-11-12",
+        "2026-11-13",
+        "2026-11-14",
+        "2026-11-15",
+        "2026-11-16",
+    ]
     later = ((date(2026, 11, 11), Decimal("3.00")), *early)
-    _mark(log, date(2026, 11, 16), datetime(2026, 11, 16, 16, 30, tzinfo=london), later)
+    _mark(log, date(2026, 11, 17), datetime(2026, 11, 17, 16, 30, tzinfo=london), later)
     rows = _interest_rows(log)
     assert [day for day, _amount, _rate in rows] == [
         "2026-11-12",
         "2026-11-13",
-        "2026-11-11",
         "2026-11-14",
         "2026-11-15",
         "2026-11-16",
+        "2026-11-11",
+        "2026-11-17",
     ]
     rates = {day: rate for day, _amount, rate in rows}
     amounts = {day: amount for day, amount, _rate in rows}
@@ -182,12 +195,12 @@ def test_sonia_gap_before_a_later_accrual_is_backfilled_once(tmp_path: Path, sta
     total = _replay_cash(rows)
     caught_up = load_book(log)
     assert caught_up.cash == total
-    assert caught_up.accrued_through == date(2026, 11, 16)
+    assert caught_up.accrued_through == date(2026, 11, 17)
     assert log.read_text(encoding="utf-8").count('"session":"2026-11-11"') >= 1
     pending = [line for line in log.read_text(encoding="utf-8").splitlines() if "interest_pending" in line]
     assert len(pending) == 1 and "amount_gbp" not in pending[0]
     stored = log.read_text(encoding="utf-8")
-    rerun = _mark(log, date(2026, 11, 16), datetime(2026, 11, 16, 18, 0, tzinfo=london), later)
+    rerun = _mark(log, date(2026, 11, 17), datetime(2026, 11, 17, 18, 0, tzinfo=london), later)
     assert rerun["status"] == "noop"
     assert log.read_text(encoding="utf-8") == stored
     assert load_book(log).cash == total

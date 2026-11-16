@@ -14,7 +14,7 @@ own source.
 
 Cash interest accrues on every calendar day, including weekends, at the latest
 IUDSOIA print whose reference date is on or before that day and whose
-publication time (10:00 London on the next XLON session, the IADB file) is at or before the
+publication time (10:00 London on the XLON day after distributor publication, the IADB file) is at or before the
 job clock. That is the same rate rule the benchmarks use. A day with no
 published print is ``interest_pending`` (no amount, not zero) and is retried
 later, including a gap under a newer accrual. ``accrued_through`` is the last

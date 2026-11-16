@@ -57,7 +57,7 @@ def test_snapshot_drops_future_prices_and_unpublished_sonia(stamped: None) -> No
     book.cumulative_costs = Decimal("1.25")
     prints = _prints()
     future = ("VWRP", date(2026, 11, 12), Decimal("999"), AS_OF + timedelta(days=1))
-    sonia = ((date(2026, 11, 10), Decimal("4.00")), (date(2026, 11, 12), Decimal("9.00")))
+    sonia = ((date(2026, 11, 9), Decimal("4.00")), (date(2026, 11, 12), Decimal("9.00")))
     base = build_invest_snapshot(book=book, prints=prints, as_of=AS_OF, requested_tradable=set(FUNDS), sonia=sonia[:1])
     leaked = build_invest_snapshot(
         book=book,
@@ -270,10 +270,10 @@ def test_future_market_and_sonia_do_not_change_earlier_results() -> None:
     changed = point_in_time_path(strategy, altered, early_days, ())
     assert changed[:-1] == before[:-1]
     assert changed[-1] != before[-1]
-    sessions = [date(2025, 3, 7)]
+    sessions = [date(2025, 3, 10)]
     published = ((date(2025, 3, 6), Decimal("4.00")),)
     future = (*published, (date(2025, 3, 7), Decimal("9.00")))
-    ceiling = datetime(2025, 3, 31, 16, 30, tzinfo=UTC)
+    ceiling = datetime(2025, 3, 10, 16, 30, tzinfo=UTC)
     known = benchmark_table({}, sessions, sonia=published, as_of=ceiling)
     leaked = benchmark_table({}, sessions, sonia=future, as_of=ceiling)
     assert known["benchmark_calculation"] == POINT_IN_TIME_CALCULATION

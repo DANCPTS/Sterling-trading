@@ -33,7 +33,7 @@ def _cache(tmp_path: Path) -> Path:
             encoding="utf-8",
         )
     (cache / "boe_sonia.csv").write_text(
-        "DATE,IUDSOIA\n11 Nov 2026,3.9845\n12 Nov 2026,9.0000\n",
+        "DATE,IUDSOIA\n10 Nov 2026,3.9845\n11 Nov 2026,9.0000\n12 Nov 2026,8.0000\n",
         encoding="utf-8",
     )
     return cache
@@ -74,7 +74,7 @@ def test_manual_day_accrues_published_sonia_and_does_not_fill(stamped: None, tmp
     valuation = next(row for row in rows if row["record_type"] == "valuation")
     rate = retail_annual_decimal(Decimal("3.9845"))
     expected = quantize_money(Decimal("10000.00") * rate / Decimal(365))
-    assert valuation["cash_rate"]["published_on"] == "2026-11-11"
+    assert valuation["cash_rate"]["published_on"] == "2026-11-10"
     assert valuation["cash_rate"]["sonia_percent"] == "3.9845"
     assert Decimal(valuation["nav_gbp"]) == Decimal("10000.00") + expected
     interest = next(row for row in rows if row["record_type"] == "cash_interest")

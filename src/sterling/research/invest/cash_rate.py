@@ -1,11 +1,12 @@
 """Retail sterling cash rate from published SONIA, without look-ahead.
 
 The Bank of England series IUDSOIA is the Sterling Overnight Index Average,
-published as an annual percent. Authorised distributors publish that print at
-09:00 Europe/London on the next XLON business day. This code reads the
-Interactive Statistical Database, which the Bank makes available by 10:00
-Europe/London on that working day. A valuation may use a print only after
-10:00. Easy-access retail deposits do not pay the wholesale rate.
+published as an annual percent. Authorised distributors publish that print at 09:00 Europe/London on the
+next XLON business day. This code reads the Interactive Statistical
+Database. The Bank makes that file available by 10:00 Europe/London on the
+working day after the first publication, one business day later. A
+valuation may use a print only after that database time. Easy-access
+retail deposits do not pay the wholesale rate.
 The research haircut is half a percentage point, floored at zero. It is a
 disclosed assumption, not a bank quote and not an operational cap.
 """
@@ -74,13 +75,16 @@ def sonia_distributor_published_at(reference: date) -> datetime:
 
 @lru_cache(maxsize=4096)
 def sonia_available_at(reference: date) -> datetime:
-    """10:00 London on the next XLON day, when the IADB file may be used.
+    """10:00 London on the XLON day after the distributor publication day.
 
-    The 09:00 distributor publication is not the availability of the database
-    this project reads. A print is not treated as captured at 09:00.
+    For a rate dated D, distributors publish at 09:00 on business day D+1.
+    The IADB file this code reads is available by 10:00 on the working day
+    after that publication, business day D+2. The calendar is XLON, England
+    and Wales bank holidays, used here as the London business-day grid.
     """
     published = _next_xlon_day(reference)
-    return datetime(published.year, published.month, published.day, 10, 0, tzinfo=LONDON)
+    database_day = _next_xlon_day(published)
+    return datetime(database_day.year, database_day.month, database_day.day, 10, 0, tzinfo=LONDON)
 
 
 def cash_quote(

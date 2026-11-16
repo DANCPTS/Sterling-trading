@@ -12,7 +12,7 @@ import pytest
 from sterling.research.grok.providers import MockGrokProvider, ScriptStep
 from sterling.research.grok.quotes import gbp_divisor, to_gbp
 from sterling.research.invest.book import Book
-from sterling.research.invest.cash_rate import cash_quote, parse_sonia_csv
+from sterling.research.invest.cash_rate import cash_quote, parse_sonia_csv, sonia_available_at, sonia_distributor_published_at
 from sterling.research.invest.daily import load_book, run_daily
 from sterling.research.invest.decide import run_invest_week
 from sterling.research.invest.market import select_market
@@ -159,6 +159,15 @@ def test_next_decision_expires_a_resting_order(tmp_path: Path, stamped: None) ->
     assert log.read_text(encoding="utf-8").count('"record_type":"fill"') == len(FUNDS)
 
 
+def test_iadb_follows_the_business_day_after_distributor_publication() -> None:
+    reference = date(2026, 11, 11)
+    assert sonia_distributor_published_at(reference) == datetime(2026, 11, 12, 9, 0, tzinfo=LONDON)
+    assert sonia_available_at(reference) == datetime(2026, 11, 13, 10, 0, tzinfo=LONDON)
+    monday = date(2026, 11, 16)
+    assert sonia_distributor_published_at(monday) == datetime(2026, 11, 17, 9, 0, tzinfo=LONDON)
+    assert sonia_available_at(monday) == datetime(2026, 11, 18, 10, 0, tzinfo=LONDON)
+
+
 def test_sonia_csv_and_publication_lag() -> None:
     text = "DATE,IUDSOIA\n09 Nov 2026,3.9684\n10 Nov 2026,3.9701\n"
     parsed = parse_sonia_csv(text)
@@ -166,7 +175,8 @@ def test_sonia_csv_and_publication_lag() -> None:
     valuation = datetime(2026, 11, 11, 16, 30, tzinfo=LONDON)
     quote = cash_quote(parsed, date(2026, 11, 11), as_of=valuation)
     assert quote is not None
-    assert quote.published_on == date(2026, 11, 10)
+    # 10 Nov is first published 11 Nov 09:00 and reaches IADB on 12 Nov 10:00.
+    assert quote.published_on == date(2026, 11, 9)
     assert quote.available_at == datetime(2026, 11, 11, 10, 0, tzinfo=LONDON)
     assert cash_quote(((date(2026, 11, 11), Decimal("4")),), date(2026, 11, 11), as_of=valuation) is None
     pence = to_gbp(Decimal("18131"), "GBp", gbp_divisor("XSTR"))

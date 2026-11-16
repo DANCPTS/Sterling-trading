@@ -18,7 +18,7 @@ The decision is weekly, at a named clock, on one designated machine. The daily j
 
 Three comparisons, all simulated and all labelled as not execution-equivalent to the paper book:
 
-- Cash: start at £10,000 and accrue the retail SONIA rate in the snapshot, Bank of England IUDSOIA minus 0.50 percentage points, floored at zero, only after 10:00 Europe/London on the next XLON session, when the Interactive Statistical Database has the file. Authorised distributors publish at 09:00; the stored first-decision snapshot still says 09:00 and is not rewritten. That snapshot used the 2026-11-11 print, retail annual decimal 0.034845. At its 16:30 clock the 10:00 rule selects the same print.
+- Cash: start at £10,000 and accrue the retail SONIA rate in the snapshot, Bank of England IUDSOIA minus 0.50 percentage points, floored at zero, only after 10:00 Europe/London on the XLON day after the 09:00 distributor publication. The stored first-decision snapshot still says the 11 November print was available at 09:00 on 12 November and is not rewritten. Under the corrected database lag that print would not have been in the IADB file at the 16:30 clock.
 - Equal weight: the six ETFs at one sixth each, rebalanced on the same point-in-time sessions, with the same research cost model. This is the passive mix of the actual universe.
 - A 60/40-style reference: 60% VWRP and 40% IGLT, because those are the global-equity and gilt names already in the universe. It is a reference sleeve, not a claim that 60/40 is optimal. It uses the same point-in-time closes and the same cost model.
 

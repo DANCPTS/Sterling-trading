@@ -106,12 +106,12 @@ def test_cached_sonia_waits_for_the_iadb_clock(tmp_path: Path, stamped: None, ca
     )
     (cache / "boe_sonia.csv").write_text("DATE,IUDSOIA\n11 Nov 2026,3.9700\n12 Nov 2026,4.1000\n", encoding="utf-8")
     log = tmp_path / "evidence" / "invest-v2" / "mock" / "forward.jsonl"
-    early = "2026-11-12T09:59:59+00:00"
+    early = "2026-11-12T16:30:00+00:00"
     assert main(["--log", str(log), "--dry-run", "--cache", str(cache), "--as-of", early]) == 0
     early_text = capsys.readouterr().out
     assert "sonia_status: unavailable" in early_text
     assert "sonia_not_yet_published" in early_text
-    assert main(["--log", str(log), "--dry-run", "--cache", str(cache), "--as-of", "2026-11-12T10:00:00+00:00"]) == 0
+    assert main(["--log", str(log), "--dry-run", "--cache", str(cache), "--as-of", "2026-11-13T10:00:00+00:00"]) == 0
     later = capsys.readouterr().out
     assert "sonia_status: published" in later
     assert "sonia_reference_date: 2026-11-11" in later

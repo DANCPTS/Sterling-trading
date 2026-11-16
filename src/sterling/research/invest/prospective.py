@@ -87,7 +87,7 @@ class SoniaCapture:
             "raw_sha256": self.raw_sha256,
             "retrieved_at": self.retrieved_at.isoformat(),
             "rows": str(len(self.rows)),
-            "rule": "IADB file by 10:00 Europe/London on the next XLON day; distributors publish at 09:00",
+            "rule": "IADB by 10:00 London on the XLON day after the 09:00 distributor publication",
         }
 
 
