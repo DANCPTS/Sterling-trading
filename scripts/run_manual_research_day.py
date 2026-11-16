@@ -62,6 +62,9 @@ def main(argv: list[str] | None = None) -> int:
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    if args.log.is_file() and _foreign_research_mode(args.log):
+        print("refusing to relabel a prospective or fixture log as retrospective", file=sys.stderr)
+        return 2
     session = date.fromisoformat(args.session)
     as_of = datetime.fromisoformat(args.as_of)
     if as_of.tzinfo is None:
@@ -169,6 +172,13 @@ def main(argv: list[str] | None = None) -> int:
             f"cumulative_return={arm['cumulative_return']} costs_gbp={arm['costs_gbp']} trades={arm['trades']}"
         )
     return 0
+
+
+def _foreign_research_mode(path: Path) -> bool:
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if '"mode":"prospective_research"' in line or '"mode":"offline_fixture"' in line:
+            return True
+    return False
 
 
 if __name__ == "__main__":

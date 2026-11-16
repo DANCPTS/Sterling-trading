@@ -14,7 +14,7 @@ The valuation clock is `--as-of`. For each of the six ETFs the file must contain
 - `retrieved_at` more than 120 seconds before availability is refused. That is a backdated capture.
 - An older close is not used in place of the session close. The five-session stale mark in `run_daily` is not reached unless every fund has this session's close. A missing fund refuses the run and writes nothing.
 - A raw provider payload must sit at `cache/raw/<sha256>` and match that hash. The observation records the hash.
-- SONIA is `boe_sonia.csv` plus `sonia_capture.json` (`retrieved_at`, `raw_sha256` of the CSV). The CSV hash must match, and the raw file must match. A file retrieved after the clock is refused. A row retrieved more than 120 seconds before `sonia_available_at` (09:00 Europe/London on the next XLON day) is refused.
+- SONIA is `boe_sonia.csv` plus `sonia_capture.json` (`retrieved_at`, `raw_sha256` of the CSV, and for a prospective run an `http_date`). The CSV hash must match, and the raw file must match. A file retrieved after the clock is refused. A row retrieved more than 120 seconds before `sonia_available_at` is refused. That instant is 10:00 Europe/London on the next XLON day, because the code reads the Interactive Statistical Database. Authorised distributors publish at 09:00. A database file is not treated as available at 09:00.
 - If every captured print is already published but none covers an accrual day, the existing rule stands: `interest_pending`, no amount, and not a zero rate. The ledger posts the interest on a later run once a published print is in the file. It does not invent one.
 - The first `--inception-session` must equal `--session`. A later run must repeat that same inception. A session before it is refused. The log is created at the clock minus two seconds, and that creation must stay within five seconds of the clock. The market session may be the previous business day when that session's own close is available and was retrieved at or before the clock. The record's `inception_clock` is the run time. The file does not claim to have existed on the session date.
 - `--expect-hash` and `--expect-records` are required. A new log expects the genesis hash and zero records. An existing log must match the last hash and the record count inside the lock. A session that already has a valuation is refused, not silently skipped.
@@ -36,50 +36,73 @@ Proposed permanent home, not created here: a new private store that is not `DANC
 
 The run holds `<root>/.research.lock` for the whole check and append. On POSIX that is a non-blocking `fcntl.flock`. On Windows it is a non-blocking `msvcrt.locking`. Any other platform refuses to append. The lock is local to the kernel of that computer. A second process on the same computer fails closed. A process on another computer, including a laptop and this VM, does not see the lock. The expected hash catches a stale copy only when the operator passes the tip they actually have. Two machines that each think they have the tip can both append. This pilot is one runner, one root, one log.
 
-## Market data
+## Clock
 
-Repository statements, not a live reading of anyone's terms:
+`--clock-mode offline-fixture` replays a historical clock. Every record it writes is `mode=offline_fixture`. The writer checks the finished log and refuses if any line is `prospective_research`. A fixture log cannot later be continued as prospective, and a prospective log cannot be continued as a fixture or by `run_manual_research_day.py`.
 
-- `src/sterling/marketdata/free_prices.py`, `src/sterling/research/grok/quotes.py`, and `deploy/private-runner/SETUP.md` say Yahoo chart bytes are not redistributable and must not be committed. Callers keep them in a gitignored cache.
-- Paper-v2 availability is `assumed-next-session` in `src/sterling/research/invest/availability.py`: no verified Yahoo publication time, usable at 08:00 Europe/London on the next XLON session. `SETUP.md` still describes an older 16:30 close assumption for the grok-forward trial. This pilot follows the paper-v2 rule.
-- SONIA is Bank of England series IUDSOIA, publication modelled as 09:00 Europe/London on the next XLON day. The repository does not contain the Bank's current database licence.
+The default clock mode is `prospective`. It writes `prospective_research` only when `--as-of` is within five minutes of both the system clock and an HTTP `Date` stored on every price capture and on the SONIA capture. That `Date` is the provider clock from the response that was saved at retrieval. The valuation does not open a new connection to obtain it. If any capture lacks the header, or the clocks disagree, the command writes nothing.
 
-Current Yahoo and Bank of England terms were not opened and were not verified offline. A historical `retrieved_at` in the 14 November cache does not prove what was on the screen at an earlier clock, and that cache is not the input for a prospective run.
+Trade-off: the HTTP `Date` checks the provider's clock at capture, not a second look at our clock later in the day. A valuation hours after the capture fails closed, which is what we want for a prospective record. NTP would check the machine at valuation time and would be another network call; it is not used. An offline fixture is the only way to replay an old clock, and it cannot wear the prospective label.
 
-Questions for the owner before any download or retention:
+## Capture
 
-1. Does the Yahoo chart licence the owner relies on allow storing raw responses, with hashes, in a private research store for the life of this pilot?
-2. Does it allow that store to be copied onto one laptop, or must the bytes stay on the machine that retrieved them?
-3. Which Bank of England terms apply to keeping IUDSOIA CSV bytes, and do they allow the same private store?
-4. Is a second source required before a prospective close is treated as more than a single-vendor print?
+`scripts/capture_research_inputs.py` is disabled unless `STERLING_CAPTURE_APPROVED=yes` and `--provider` are both set. `yahoo`, `yahoo-chart`, `boe`, and `boe-iadb` are refused even then. `synthetic` reads local files only and writes the six CSVs, `boe_sonia.csv`, `sonia_capture.json`, and `cache/raw/<sha256>`. No adapter in this tree downloads a series. A later licensed adapter would implement the same `SyntheticCapture` shape without adding a socket to this module.
 
-Until those are answered, the code can rehearse fixtures. It should not be pointed at a new download.
+## Market data, read on 16 November 2026
 
-## First run, when the owner later activates it
+Pages read were terms and documentation. No series was downloaded.
 
-At 00:07 UK on Monday 16 November 2026 nothing prospective has been captured. Do not run the command tonight. Do not catch up 13–15 November. Do not reuse `/tmp/genuine_cache_v2`.
+SONIA route in this repo: `scripts/run_weekly_decision.py` function `fetch_boe_sonia` requests `https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp` with `SeriesCodes=IUDSOIA`. That is the Interactive Statistical Database, not an authorised-distributor feed.
 
-Monday's close is not available, under the paper-v2 assumption, until Tuesday 17 November 08:00 London. Monday's SONIA is not published until Tuesday 17 November 09:00 London. The first complete valuation is therefore session `2026-11-16`, inception session `2026-11-16`, clock at or after `2026-11-17T09:00:00+00:00`, with files retrieved at that run and not before the close was available. `inception_clock` will be that Tuesday time. Saturday and Sunday are not accrued, because the log's first session is Monday.
+Bank of England, [SONIA key features and policies](https://www.bankofengland.co.uk/markets/sonia-benchmark/sonia-key-features-and-policies), retrieved 16 November 2026:
 
-Capture the six raw chart responses and the IUDSOIA file into a cache directory with `retrieved_at`, `raw_sha256`, and `cache/raw/<hash>`. Then, on the one machine that will keep the store:
+> The SONIA rate for a given London business day is published at 9am on the following London business day.
 
-```
-STERLING_EVIDENCE_LANE=mock \
-STERLING_SYSTEM=sterling-invest \
-STERLING_EXPERIMENT=paper-v2 \
-python3 scripts/run_prospective_research_day.py \
-  --root <absolute-directory-outside-both-repos> \
-  --log <absolute-directory-outside-both-repos>/evidence/invest-v2/mock/forward.jsonl \
-  --cache <capture-directory> \
-  --session 2026-11-16 \
-  --inception-session 2026-11-16 \
-  --as-of <clock-at-or-after-2026-11-17T09:00:00+00:00> \
-  --expect-hash 0000000000000000000000000000000000000000000000000000000000000000 \
-  --expect-records 0
-```
+> SONIA is made freely available via the Bank of England’s Interactive Statistical Database by 10:00 on the working day after it is first published. ... Reproduction of these data in the Database are subject to the terms of the UK Open Government Licence, allowing and encouraging free and flexible data reuse.
 
-Check that the process printed `mode=prospective_research`, that `manifests/LATEST` matches `sha256sum` of the log, that `ProposalLog.verify` passes, that there is one `cash_interest` and it is Monday, and that there is no `fill` and no `decision`. A second run for the same session must exit 2 and leave the log bytes unchanged.
+The same 10:00 sentence is on [Further details about SONIA data](https://www.bankofengland.co.uk/statistics/details/further-details-about-wholesale-interbank-sterling-market-data), retrieved the same day. The database home page observed that day said the database was last updated at 10:00.
+
+[Bank of England legal page](https://www.bankofengland.co.uk/legal), retrieved 16 November 2026, Database section:
+
+> Reproduction of data in the Database is subject to the terms of the UK Open Government Licence, allowing and encouraging free and flexible data reuse.
+
+> SONIA and/or SONIA Compounded Index data licensed under the Open Government Licence v3.0 and copyright the Governor and Company of the Bank of England.
+
+The Open Government Licence v3.0 lets a user copy, publish, distribute, adapt, and exploit the information commercially and non-commercially, with attribution. Selected exchange-rate series are excluded from that licence; IUDSOIA is not in that exclusion. A direct SONIA licence is required for redistribution to clients, listed derivatives, clearing, or valuation of clients' portfolios. Internal use of the database file, with the attribution sentence, is the basis this pilot can rely on. The 09:00 distributor feed is a different product and is not what this code fetches.
+
+A new valuation between 09:00 and 10:00 London now waits. The stored first paid-call snapshot still says the 11 November print was available at `2026-11-12T09:00:00+00:00`. That file is not rewritten. Its decision clock was 16:30, which is after 10:00, so the same print would be selected under the new rule. End-of-day benchmark marks are also after 10:00, so their selected print does not change. Only a clock inside that hour changes.
+
+Yahoo, [Terms of Service](https://legal.yahoo.com/us/en/yahoo/terms/otos/index.html), retrieved 16 November 2026:
+
+> access or collect data, or attempt to access or collect data, from our Services using any automated means, devices, programs, algorithms or methodologies, including but not limited to robots, spiders, scrapers, data mining tools, or data gathering or extraction tools, for any purpose without our express, prior permission.
+
+> Unless otherwise expressly stated, you may not access or reuse the Services, or any portion thereof, for any commercial purpose.
+
+> Unless you have explicit written permission, you must not reproduce, modify, rent, lease, sell, trade, distribute, transmit, broadcast, publicly perform, create derivative works based on, or exploit for any commercial purposes, any portion or use of, or access to, the Services (including content, advertisements, APIs, and software).
+
+The chart URL in `scripts/run_weekly_decision.py` (`query1.finance.yahoo.com/v8/finance/chart/`) is not a documented Yahoo API. The [Yahoo Developer API Terms of Use](https://legal.yahoo.com/us/en/yahoo/terms/product-atos/apiforydn/index.html), retrieved the same day, govern APIs Yahoo offers to a signed-in developer. They do not grant this chart collection. Automated collection, private raw-response storage, and long-term retention are not permitted on the terms that were read. The capture command refuses a Yahoo provider. The repository's own `free_prices.py` already says the chart bytes are not redistributable.
+
+No Finance-specific terms page found in this review establishes the opposite. Permission is not established. Do not capture Yahoo.
+
+Legitimate alternatives, from their own pages on 16 November 2026, for end-of-day prices. None was called.
+
+- Bank of England IUDSOIA, as above, for the cash rate. Open Government Licence with the SONIA attribution. No fee stated for the database file.
+- [Tiingo pricing](https://www.tiingo.com/about/pricing): individual API $30 a month or $300 a year, internal commercial $50 a month or $499 a year. The page says internal use "may only use the data for your own personal use and you may not display or share the data with another person or organization." ETF coverage is listed. Confirm London listings and raw-response retention with Tiingo before use.
+- [EODHD pricing](https://eodhd.com/pricing): end-of-day all-world historical plan $19.99 a month or $199 a year, 100,000 API calls a day, 30+ years. The pricing page describes the plan. Read EODHD's licence page before storing raw responses; this review did not find a clause that already grants this pilot's archive.
+- [Alpha Vantage premium](https://www.alphavantage.co/premium/): free tier 25 requests a day; paid plans from $49.99 a month for 75 requests a minute. The page does not state a London ETF raw-storage licence. Treat it as a candidate only after that licence is read.
+- ETF issuer NAVs (iShares, Vanguard, Invesco, Xtrackers) are already the second source described in `deploy/private-runner/SETUP.md` for several funds. They are NAVs, not exchange closes. Each issuer's terms still have to be read before a raw archive.
+- LSEG, the London Stock Exchange's data business, Nasdaq Data Link, Morningstar, and Interactive Brokers market data are licensed exchange or vendor feeds. Their public pages do not post a single self-serve price that covers these six LSE ETFs with a private raw archive. Ask them for a quote. Do not scrape them.
+
+The recommended pair for a later activation is the Bank's database for SONIA, which the terms above cover, and one paid end-of-day vendor whose contract explicitly allows a private hash-addressed archive. Tiingo's internal-use plan is the clearest public price and restriction found. It is not yet approved, and the capture command will not call it.
+
+## First run, still not authorised
+
+Do not run a capture or a valuation. Nothing prospective has been captured. Do not catch up 13–15 November. Do not reuse the 14 November cache. Do not point the capture command at Yahoo or at the IADB URL until the owner turns on a provider that the terms allow. The IADB terms above would allow a later SONIA capture; the Yahoo terms would not allow the prices.
+
+When that is decided, the first complete sitting is at or after 10:00 Europe/London on Tuesday 17 November 2026. Monday's exchange close is assumed available from Tuesday 08:00. Monday's IUDSOIA file is not available until Tuesday 10:00. `--as-of` has to be that actual time, within five minutes of the machine clock and of the HTTP `Date` on the captures. A handwritten `2026-11-17T10:00:00+00:00` fails if the machine and the provider header are not inside that five minutes. Session and inception session are `2026-11-16`. Saturday and Sunday are not accrued. The log is created at that Tuesday clock.
+
+`--clock-mode offline-fixture` may rehearse the shape of the files. It must not be described as the prospective record.
 
 ## Activation
 
-NO-GO. This change prepares the command and the tests. It is not approval to capture live prices, create the real log, call a model, or trade.
+NO-GO. The command and the tests are ready for review. They are not approval to download, to create the real log, to call a model, or to trade.

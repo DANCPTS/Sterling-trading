@@ -37,6 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expect-hash")
     parser.add_argument("--expect-records", type=int)
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--clock-mode", default="prospective", choices=("prospective", "offline-fixture"))
     parser.add_argument("--recover", action="store_true")
     args = parser.parse_args(raw)
     try:
@@ -60,13 +61,14 @@ def main(argv: list[str] | None = None) -> int:
             expect_hash=args.expect_hash,
             expect_records=args.expect_records,
             report=args.report,
+            clock_mode=args.clock_mode,
         )
     except ResearchError as exc:
         print(str(exc), file=sys.stderr)
         return 2
     print(
         f"prospective status={result['status']} session={result['session']} "
-        f"nav_gbp={result['nav_gbp']} mode=prospective_research not_official_evidence=true"
+        f"nav_gbp={result['nav_gbp']} mode={result['mode']} not_official_evidence=true"
     )
     return 0
 

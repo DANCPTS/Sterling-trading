@@ -44,21 +44,31 @@ def _raw(cache: Path, payload: bytes) -> str:
     return digest
 
 
-def _cache(tmp_path: Path, *, session: str, published: str, retrieved: str, sonia: str, sonia_retrieved: str, name: str) -> Path:
+def _cache(
+    tmp_path: Path,
+    *,
+    session: str,
+    published: str,
+    retrieved: str,
+    sonia: str,
+    sonia_retrieved: str,
+    name: str,
+    http_date: str = "",
+) -> Path:
     cache = tmp_path / name
     cache.mkdir()
     price_hash = _raw(cache, f"prices-{session}-{retrieved}".encode())
     for name in FUNDS:
         (cache / f"{name}.csv").write_text(
-            "date,close,availability_basis,published_at,retrieved_at,source,raw_sha256\n"
-            f"{session},100.00,source-verified,{published},{retrieved},fixture,{price_hash}\n",
+            "date,close,availability_basis,published_at,retrieved_at,source,raw_sha256,http_date\n"
+            f"{session},100.00,source-verified,{published},{retrieved},fixture,{price_hash},{http_date}\n",
             encoding="utf-8",
         )
     sonia_bytes = f"DATE,IUDSOIA\n{sonia}\n".encode() if sonia else b"DATE,IUDSOIA\n"
     (cache / "boe_sonia.csv").write_bytes(sonia_bytes)
     sonia_hash = _raw(cache, sonia_bytes)
     (cache / "sonia_capture.json").write_text(
-        json.dumps({"raw_sha256": sonia_hash, "retrieved_at": sonia_retrieved}) + "\n",
+        json.dumps({"http_date": http_date, "raw_sha256": sonia_hash, "retrieved_at": sonia_retrieved}) + "\n",
         encoding="utf-8",
     )
     return cache
@@ -109,6 +119,8 @@ def _run(
             expect_hash,
             "--expect-records",
             str(expect_records),
+            "--clock-mode",
+            "offline-fixture",
         ]
     )
 
@@ -119,15 +131,16 @@ def test_valid_clock_records_prospective_provenance(lane: None, tmp_path: Path) 
     assert _run(root, log, _friday(tmp_path), "2026-11-13", "2026-11-13", FRIDAY, GENESIS, 0) == 0
     rows = list(ProposalLog(log).records())
     snapshot = next(row for row in rows if row["record_type"] == "snapshot")
-    assert snapshot["mode"] == "prospective_research"
+    assert snapshot["mode"] == "offline_fixture"
     assert snapshot["not_official_evidence"] == "true"
     assert snapshot["inception_session"] == "2026-11-13"
     assert "retrospective" not in json.dumps(snapshot)
     observations = snapshot["observations"]
     assert isinstance(observations, list) and len(observations) == 6
     valuation = next(row for row in rows if row["record_type"] == "valuation")
-    assert valuation["mode"] == "prospective_research"
-    assert valuation["data_label"] == "prospective_research"
+    assert valuation["mode"] == "offline_fixture"
+    assert valuation["data_label"] == "offline_fixture"
+    assert "prospective_research" not in log.read_text(encoding="utf-8")
     interest = next(row for row in rows if row["record_type"] == "cash_interest")
     rate = retail_annual_decimal(Decimal("3.9845"))
     assert interest["amount_gbp"] == format(quantize_money(Decimal("10000.00") * rate / Decimal(365)), "f")
@@ -330,6 +343,192 @@ def test_backdated_inception_is_refused(lane: None, tmp_path: Path) -> None:
     root, log = _store(tmp_path)
     assert _run(root, log, _friday(tmp_path), "2026-11-13", "2026-11-01", FRIDAY, GENESIS, 0) == 2
     assert not log.exists()
+
+
+def test_live_clock_can_be_prospective_and_cannot_be_relabelled(
+    lane: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    del lane
+    frozen = "2026-11-17T10:05:00+00:00"
+    monkeypatch.setattr(
+        "sterling.research.invest.prospective._system_now",
+        lambda: __import__("datetime").datetime.fromisoformat(frozen),
+    )
+    root, log = _store(tmp_path)
+    cache = _cache(
+        tmp_path,
+        session="2026-11-16",
+        published=frozen,
+        retrieved=frozen,
+        sonia="16 Nov 2026,3.9845",
+        sonia_retrieved=frozen,
+        name="live",
+        http_date=frozen,
+    )
+    assert (
+        main(
+            [
+                "--root",
+                str(root),
+                "--log",
+                str(log),
+                "--cache",
+                str(cache),
+                "--session",
+                "2026-11-16",
+                "--inception-session",
+                "2026-11-16",
+                "--as-of",
+                frozen,
+                "--expect-hash",
+                GENESIS,
+                "--expect-records",
+                "0",
+            ]
+        )
+        == 0
+    )
+    text = log.read_text(encoding="utf-8")
+    assert '"mode":"prospective_research"' in text
+    assert '"mode":"offline_fixture"' not in text
+    original = log.read_bytes()
+    count, tip = _tip(log)
+    assert (
+        main(
+            [
+                "--root",
+                str(root),
+                "--log",
+                str(log),
+                "--cache",
+                str(cache),
+                "--session",
+                "2026-11-16",
+                "--inception-session",
+                "2026-11-16",
+                "--as-of",
+                frozen,
+                "--expect-hash",
+                tip,
+                "--expect-records",
+                str(count),
+                "--clock-mode",
+                "offline-fixture",
+            ]
+        )
+        == 2
+    )
+    assert log.read_bytes() == original
+
+
+def test_historical_clock_and_fixture_log_cannot_become_prospective(lane: None, tmp_path: Path) -> None:
+    del lane
+    root, log = _store(tmp_path)
+    friday = _friday(tmp_path)
+    assert (
+        main(
+            [
+                "--root",
+                str(root),
+                "--log",
+                str(log),
+                "--cache",
+                str(friday),
+                "--session",
+                "2026-11-13",
+                "--inception-session",
+                "2026-11-13",
+                "--as-of",
+                FRIDAY,
+                "--expect-hash",
+                GENESIS,
+                "--expect-records",
+                "0",
+            ]
+        )
+        == 2
+    )
+    assert not log.exists()
+    assert _run(root, log, friday, "2026-11-13", "2026-11-13", FRIDAY, GENESIS, 0) == 0
+    original = log.read_bytes()
+    count, tip = _tip(log)
+    assert (
+        main(
+            [
+                "--root",
+                str(root),
+                "--log",
+                str(log),
+                "--cache",
+                str(friday),
+                "--session",
+                "2026-11-16",
+                "--inception-session",
+                "2026-11-13",
+                "--as-of",
+                MONDAY,
+                "--expect-hash",
+                tip,
+                "--expect-records",
+                str(count),
+            ]
+        )
+        == 2
+    )
+    assert log.read_bytes() == original
+    from scripts.run_manual_research_day import main as retrospective
+
+    assert retrospective(["--log", str(log), "--cache", str(friday), "--session", "2026-11-16", "--as-of", MONDAY]) == 2
+    assert log.read_bytes() == original
+
+
+def test_capture_stays_offline_until_a_permitted_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts.capture_research_inputs import main as capture_main
+
+    destination = tmp_path / "out"
+    assert capture_main(["--provider", "synthetic", "--destination", str(destination)]) == 2
+    monkeypatch.setenv("STERLING_CAPTURE_APPROVED", "yes")
+    assert capture_main(["--provider", "yahoo", "--destination", str(destination)]) == 2
+    assert capture_main(["--provider", "boe-iadb", "--destination", str(destination)]) == 2
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    for name in FUNDS:
+        (fixture / f"{name}.bin").write_bytes(f"raw-{name}".encode())
+    (fixture / "boe_sonia.csv").write_bytes(b"DATE,IUDSOIA\n16 Nov 2026,3.9845\n")
+
+    def _blocked(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("network")
+
+    monkeypatch.setattr(socket, "socket", _blocked)
+    monkeypatch.setattr(socket, "create_connection", _blocked)
+    moment = "2026-11-17T10:05:00+00:00"
+    assert (
+        capture_main(
+            [
+                "--provider",
+                "synthetic",
+                "--destination",
+                str(destination),
+                "--fixture-dir",
+                str(fixture),
+                "--session",
+                "2026-11-16",
+                "--published-at",
+                moment,
+                "--retrieved-at",
+                moment,
+                "--http-date",
+                moment,
+            ]
+        )
+        == 0
+    )
+    assert (destination / "VWRP.csv").is_file()
+    assert (destination / "boe_sonia.csv").is_file()
+    assert (destination / "sonia_capture.json").is_file()
+    raw = list((destination / "raw").iterdir())
+    assert raw
+    assert hashlib.sha256(raw[0].read_bytes()).hexdigest() == raw[0].name
 
 
 def _tip(path: Path) -> tuple[int, str]:

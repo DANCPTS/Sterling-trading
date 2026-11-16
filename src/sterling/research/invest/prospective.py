@@ -32,9 +32,11 @@ from sterling.research.invest.schema import FUNDS
 APP_ROOT = Path(__file__).resolve().parents[4]
 MOCK_SUFFIX = "evidence/invest-v2/mock/forward.jsonl"
 EVIDENCE_REMOTE = "sterling-forward-evidence"
-MODE = "prospective_research"
+MODE_PROSPECTIVE = "prospective_research"
+MODE_FIXTURE = "offline_fixture"
 CAPTURE_SKEW = timedelta(seconds=120)
 CREATE_OFFSET = timedelta(seconds=2)
+CLOCK_TOLERANCE = timedelta(minutes=5)
 PROVIDER_TOKENS = ("--provider", "--fetch", "--broker", "--schedule", "xai")
 
 
@@ -54,6 +56,7 @@ class CapturedClose:
     availability_basis: str
     source: str
     raw_sha256: str
+    http_date: datetime | None = None
 
     def as_log(self) -> dict[str, str | None]:
         return {
@@ -62,6 +65,7 @@ class CapturedClose:
             "exchange_close_at": self.exchange_close_at.isoformat(),
             "instrument_id": self.ticker,
             "price_gbp": format(self.price, "f"),
+            "http_date": None if self.http_date is None else self.http_date.isoformat(),
             "provider_published_at": None if self.provider_published_at is None else self.provider_published_at.isoformat(),
             "raw_sha256": self.raw_sha256,
             "retrieved_at": self.retrieved_at.isoformat(),
@@ -75,13 +79,15 @@ class SoniaCapture:
     rows: tuple[tuple[date, Decimal], ...]
     retrieved_at: datetime
     raw_sha256: str
+    http_date: datetime | None = None
 
-    def as_log(self) -> dict[str, str]:
+    def as_log(self) -> dict[str, str | None]:
         return {
+            "http_date": None if self.http_date is None else self.http_date.isoformat(),
             "raw_sha256": self.raw_sha256,
             "retrieved_at": self.retrieved_at.isoformat(),
             "rows": str(len(self.rows)),
-            "rule": "IUDSOIA publication is 09:00 Europe/London on the next XLON day",
+            "rule": "IADB file by 10:00 Europe/London on the next XLON day; distributors publish at 09:00",
         }
 
 
@@ -104,6 +110,7 @@ def run_prospective(
     expect_hash: str,
     expect_records: int,
     report: Path | None = None,
+    clock_mode: str = "prospective",
 ) -> dict[str, object]:
     """Value one session into an isolated mock log. Refusals write nothing."""
     if as_of.tzinfo is None:
@@ -123,10 +130,11 @@ def run_prospective(
             raise ProspectiveRefusal(f"{session.isoformat()} is already valued")
         closes = _session_closes(cache, session, clock)
         sonia = _sonia_capture(cache, clock)
+        record_mode = _record_mode(clock_mode, clock, closes, sonia, log_path)
         _assert_inception(log_path, session, inception_session, clock, closes)
         before = log_path.read_bytes() if log_path.is_file() else b""
         fresh = not log_path.exists()
-        stamp = _stamp(inception_session, clock, closes, sonia)
+        stamp = _stamp(inception_session, clock, closes, sonia, record_mode)
         if fresh:
             ProposalLog(log_path).create(now=clock - CREATE_OFFSET)
         created = ProposalLog(log_path).created_at()
@@ -140,7 +148,7 @@ def run_prospective(
                 "day_count": "ACT/365",
                 "inception_clock": clock.isoformat(),
                 "inception_session": inception_session.isoformat(),
-                "mode": MODE,
+                "mode": record_mode,
                 "not_official_evidence": "true",
                 "observations": [item.as_log() for item in closes],
                 "price_policy": "session close required; an older close is not substituted",
@@ -158,9 +166,10 @@ def run_prospective(
             sonia=sonia.rows,
             recorded_at=clock,
             open_source="captured-research",
-            data_label=MODE,
+            data_label=record_mode,
             record_stamp=stamp,
         )
+        _assert_mode_intact(log_path, record_mode)
         after = log_path.read_bytes()
         if not after.startswith(before):
             raise ProspectiveRefusal("append changed earlier log bytes")
@@ -168,11 +177,12 @@ def run_prospective(
     if report is not None:
         report.parent.mkdir(parents=True, exist_ok=True)
         report.write_text(
-            json.dumps({"daily": result, "manifest_sha256": manifest, "mode": MODE}, indent=2, sort_keys=True) + "\n",
+            json.dumps({"daily": result, "manifest_sha256": manifest, "mode": record_mode}, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
     return {
         "manifest_sha256": manifest,
+        "mode": record_mode,
         "status": result["status"],
         "nav_gbp": result.get("nav_gbp", ""),
         "session": session.isoformat(),
@@ -211,7 +221,86 @@ def tip_state(path: Path) -> tuple[int, str]:
     return count, tip
 
 
-def _stamp(inception: date, clock: datetime, closes: Sequence[CapturedClose], sonia: SoniaCapture) -> dict[str, str]:
+def _system_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _record_mode(
+    clock_mode: str,
+    clock: datetime,
+    closes: Sequence[CapturedClose],
+    sonia: SoniaCapture,
+    log_path: Path,
+) -> str:
+    """Fixture replays never receive the prospective label. A live clock can."""
+    existing = _existing_mode(log_path)
+    if clock_mode == "offline-fixture":
+        if existing == MODE_PROSPECTIVE:
+            raise ProspectiveRefusal("a prospective log cannot be relabelled as an offline fixture")
+        return MODE_FIXTURE
+    if clock_mode != "prospective":
+        raise ProspectiveRefusal("clock mode must be prospective or offline-fixture")
+    if existing == MODE_FIXTURE:
+        raise ProspectiveRefusal("an offline fixture log cannot be relabelled as prospective")
+    if existing == "retrospective-demonstration":
+        raise ProspectiveRefusal("a retrospective log cannot be relabelled as prospective")
+    _require_live_clock(clock, closes, sonia)
+    return MODE_PROSPECTIVE
+
+
+def _require_live_clock(clock: datetime, closes: Sequence[CapturedClose], sonia: SoniaCapture) -> None:
+    """``--as-of`` must match the system clock and the capture HTTP Date.
+
+    The HTTP Date is the provider clock stored with the raw response. It is
+    not a new download. If that header is missing, or it disagrees with the
+    system clock by more than five minutes, no prospective record is written.
+    """
+    system = _system_now()
+    observed: list[datetime] = []
+    for item in closes:
+        if item.http_date is None:
+            raise ProspectiveRefusal(f"{item.ticker} has no HTTP Date; refusing a prospective record")
+        observed.append(item.http_date)
+    if sonia.http_date is None:
+        raise ProspectiveRefusal("SONIA capture has no HTTP Date; refusing a prospective record")
+    observed.append(sonia.http_date)
+    for moment in (system, *observed):
+        if abs(moment - clock) > CLOCK_TOLERANCE or abs(moment - system) > CLOCK_TOLERANCE:
+            raise ProspectiveRefusal("as-of is outside the system clock and the capture HTTP Date")
+    if clock > system:
+        raise ProspectiveRefusal("as-of is after the system clock")
+
+
+def _existing_mode(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    for row in ProposalLog(path).records():
+        if row.get("record_type") != "snapshot":
+            continue
+        mode = row.get("mode")
+        if isinstance(mode, str):
+            return mode
+        if row.get("label") == "retrospective-demonstration":
+            return "retrospective-demonstration"
+    return ""
+
+
+def _assert_mode_intact(path: Path, record_mode: str) -> None:
+    for row in ProposalLog(path).records():
+        mode = row.get("mode")
+        if record_mode == MODE_FIXTURE and mode == MODE_PROSPECTIVE:
+            raise ProspectiveRefusal("offline fixture wrote a prospective record")
+        if isinstance(mode, str) and mode not in {record_mode, ""}:
+            raise ProspectiveRefusal("log mixes research modes")
+
+
+def _stamp(
+    inception: date,
+    clock: datetime,
+    closes: Sequence[CapturedClose],
+    sonia: SoniaCapture,
+    record_mode: str,
+) -> dict[str, str]:
     body = {
         "closes": [item.as_log() for item in closes],
         "inception_session": inception.isoformat(),
@@ -221,7 +310,7 @@ def _stamp(inception: date, clock: datetime, closes: Sequence[CapturedClose], so
     return {
         "inception_clock": clock.isoformat(),
         "inception_session": inception.isoformat(),
-        "mode": MODE,
+        "mode": record_mode,
         "not_official_evidence": "true",
         "provenance_sha256": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
     }
@@ -329,6 +418,7 @@ def _one_close(ticker: str, record: Mapping[str, str], cache: Path) -> CapturedC
         raise ProspectiveRefusal(f"{ticker} needs a verified publication time or availability_basis=assumed-next-session")
     close_text = (record.get("exchange_close_at") or "").strip()
     close_at = _aware(close_text, f"{ticker} exchange_close_at") if close_text else exchange_close_at(session)
+    http_text = (record.get("http_date") or "").strip()
     return CapturedClose(
         ticker=ticker,
         session=session,
@@ -340,6 +430,7 @@ def _one_close(ticker: str, record: Mapping[str, str], cache: Path) -> CapturedC
         availability_basis=basis_name,
         source=(record.get("source") or "").strip() or "local-capture",
         raw_sha256=raw_hash,
+        http_date=_aware(http_text, f"{ticker} http_date") if http_text else None,
     )
 
 
@@ -361,6 +452,8 @@ def _sonia_capture(cache: Path, clock: datetime) -> SoniaCapture:
         raise ProspectiveRefusal("SONIA file hash does not match the retrieval record")
     _require_raw(cache, raw_hash)
     retrieved = _aware(retrieved_text, "SONIA retrieved_at")
+    http_value = meta.get("http_date")
+    http_date = _aware(http_value, "SONIA http_date") if isinstance(http_value, str) and http_value.strip() else None
     if retrieved > clock:
         raise ProspectiveRefusal("SONIA file was retrieved after the valuation clock")
     rows = parse_sonia_csv(raw.decode("utf-8"))
@@ -368,7 +461,7 @@ def _sonia_capture(cache: Path, clock: datetime) -> SoniaCapture:
         published = sonia_available_at(reference).astimezone(UTC)
         if retrieved + CAPTURE_SKEW < published:
             raise ProspectiveRefusal(f"SONIA {reference.isoformat()} was retrieved before its publication")
-    return SoniaCapture(rows=rows, retrieved_at=retrieved, raw_sha256=digest)
+    return SoniaCapture(rows=rows, retrieved_at=retrieved, raw_sha256=digest, http_date=http_date)
 
 
 def _require_raw(cache: Path, digest: str) -> None:

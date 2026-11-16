@@ -167,7 +167,7 @@ def test_sonia_csv_and_publication_lag() -> None:
     quote = cash_quote(parsed, date(2026, 11, 11), as_of=valuation)
     assert quote is not None
     assert quote.published_on == date(2026, 11, 10)
-    assert quote.available_at == datetime(2026, 11, 11, 9, 0, tzinfo=LONDON)
+    assert quote.available_at == datetime(2026, 11, 11, 10, 0, tzinfo=LONDON)
     assert cash_quote(((date(2026, 11, 11), Decimal("4")),), date(2026, 11, 11), as_of=valuation) is None
     pence = to_gbp(Decimal("18131"), "GBp", gbp_divisor("XSTR"))
     assert pence == Decimal("181.31")
