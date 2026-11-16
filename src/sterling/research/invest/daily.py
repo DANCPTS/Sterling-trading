@@ -14,7 +14,7 @@ own source.
 
 Cash interest accrues on every calendar day, including weekends, at the latest
 IUDSOIA print whose reference date is on or before that day and whose
-publication time (09:00 London on the next XLON session) is at or before the
+publication time (10:00 London on the XLON day after distributor publication, the IADB file) is at or before the
 job clock. That is the same rate rule the benchmarks use. A day with no
 published print is ``interest_pending`` (no amount, not zero) and is retried
 later, including a gap under a newer accrual. ``accrued_through`` is the last
@@ -65,11 +65,13 @@ def run_daily(
     data_label: str,
     stop_after: str | None = None,
     cross_check: Mapping[str, str] | None = None,
+    record_stamp: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Settle one London session. A second call for that date appends nothing."""
     if "xai" in open_source.lower() or "provider" in open_source.lower():
         raise RuntimeError("daily settlement does not call a provider")
     log = _open(log_path, recorded_at)
+    stamp = dict(record_stamp or {})
     records = log.records()
     if _has(records, "valuation", session) and _has(records, "performance", session):
         return {"status": "noop", "session": session.isoformat(), "provider_calls": 0}
@@ -83,7 +85,7 @@ def run_daily(
         day_quote = cash_quote(sonia, day, as_of=recorded_at)
         if day_quote is None:
             if day.isoformat() not in pending_days:
-                moment = _append(log, moment, "interest_pending", _pending_fields(day, origin, accrued))
+                moment = _append(log, moment, "interest_pending", _pending_fields(day, origin, accrued), stamp)
                 pending_days.add(day.isoformat())
             continue
         rate = day_quote.annual_decimal
@@ -108,6 +110,7 @@ def run_daily(
                 "source": day_quote.source,
                 "status": "accrued",
             },
+            stamp,
         )
     if stop_after == "interest":
         return {"provider_calls": 0, "session": session.isoformat(), "status": "stopped", "nav_gbp": format(book.cash, "f")}
@@ -143,6 +146,7 @@ def run_daily(
                     moment,
                     "fill_skipped",
                     {"fund": ticker, "reason": reason, "session": session.isoformat(), "source": open_source},
+                    stamp,
                 )
             continue
         if not _can_size(book, prices):
@@ -158,12 +162,13 @@ def run_daily(
                         "session": session.isoformat(),
                         "source": open_source,
                     },
+                    stamp,
                 )
             continue
         for fill in trade_toward(book, ticker, pending[ticker], opens[ticker], prices, session):
             fill["source"] = open_source
             fill["open_at"] = opened.isoformat() if opened is not None else ""
-            moment = _append(log, moment, "fill", fill)
+            moment = _append(log, moment, "fill", fill, stamp)
     if stop_after == "fills":
         return {"provider_calls": 0, "session": session.isoformat(), "status": "stopped", "nav_gbp": format(book.cash, "f")}
     if _can_size(book, prices):
@@ -172,7 +177,13 @@ def run_daily(
     else:
         nav = book.cash
     if not _has(log.records(), "valuation", session):
-        moment = _append(log, moment, "valuation", _valuation(book, session, nav, statuses, skipped, quote, data_label))
+        moment = _append(
+            log,
+            moment,
+            "valuation",
+            _valuation(book, session, nav, statuses, skipped, quote, data_label),
+            stamp,
+        )
     if not _has(log.records(), "performance", session):
         start = session - timedelta(days=40)
         sessions = [day for day in _sessions_in(log.records(), start, session)]
@@ -181,7 +192,7 @@ def run_daily(
         table["performance_schema"] = table.pop("schema")
         table["data_label"] = data_label
         table["session"] = session.isoformat()
-        _append(log, moment, "performance", table)
+        _append(log, moment, "performance", table, stamp)
     return {"provider_calls": 0, "session": session.isoformat(), "status": "marked", "nav_gbp": format(nav, "f")}
 
 
@@ -556,8 +567,18 @@ def _open(path: Path, when: datetime) -> ProposalLog:
     return log
 
 
-def _append(log: ProposalLog, when: datetime, record_type: str, fields: Mapping[str, object]) -> datetime:
+def _append(
+    log: ProposalLog,
+    when: datetime,
+    record_type: str,
+    fields: Mapping[str, object],
+    stamp: Mapping[str, str] | None = None,
+) -> datetime:
+    payload = dict(fields)
+    for key, value in (stamp or {}).items():
+        if key not in payload:
+            payload[key] = value
     previous = datetime.fromisoformat(str(log.records()[-1]["timestamp_utc"]))
     stamped = when if when > previous else previous + timedelta(microseconds=1)
-    log.append_event(timestamp_utc=stamped, record_type=record_type, fields=fields)
+    log.append_event(timestamp_utc=stamped, record_type=record_type, fields=payload)
     return stamped

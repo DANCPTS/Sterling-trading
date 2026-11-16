@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from functools import lru_cache
 from zoneinfo import ZoneInfo
 
 from sterling.research.errors import ResearchError
@@ -199,11 +200,15 @@ def bank_holidays_between(start: date, end: date) -> frozenset[date]:
     return frozenset(found)
 
 
+@lru_cache(maxsize=32)
 def xlon(start: date | None = None, end: date | None = None) -> WeekdayCalendar:
     """LSE full-day sessions from England and Wales bank holidays.
 
     The default span covers 1995 through 2035 so a research window does not
     need to pass dates. Pass ``start`` and ``end`` to limit the stored set.
+    The same arguments return the same calendar. Publication-lag checks call
+    this once per SONIA print, and rebuilding 1995–2035 on every print made
+    a multi-year accrual unusable. The holiday set is a frozenset.
     """
     first = start or date(1995, 1, 1)
     last = end or date(2035, 12, 31)

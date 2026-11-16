@@ -113,7 +113,8 @@ def test_hundred_percent_and_missing_price_and_two_weeks(tmp_path: Path, stamped
     log = tmp_path / "weeks.jsonl"
     book = Book()
     single = {name: "0" for name in (*FUNDS, CASH)}
-    single["VWRP"] = "1"
+    single["VWRP"] = "0.40"
+    single[CASH] = "0.60"
     provider = MockGrokProvider(steps=(ScriptStep(raw_response=_weights(single)),), response_format="allocation")
     tradable = set(FUNDS) - {"IGLT"}
     decided = run_invest_week(

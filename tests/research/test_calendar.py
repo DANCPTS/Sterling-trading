@@ -58,6 +58,14 @@ def test_proclaimed_one_offs_and_moves() -> None:
     assert calendar.is_trading_day(date(2023, 5, 1)) is False
 
 
+def test_default_xlon_calendar_is_reused() -> None:
+    assert xlon() is xlon()
+    limited = xlon(date(2024, 1, 1), date(2024, 12, 31))
+    assert date(2023, 12, 25) not in limited.holidays
+    assert limited is xlon(date(2024, 1, 1), date(2024, 12, 31))
+    assert limited is not xlon()
+
+
 def test_equity_regimes_are_fixed_thresholds() -> None:
     assert classify_trailing_equity(Decimal("0.10")) == "sideways"
     assert classify_trailing_equity(Decimal("0.1000001")) == "up"

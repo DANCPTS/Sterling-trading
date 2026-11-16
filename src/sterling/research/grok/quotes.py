@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from sterling.research.errors import ResearchError
 from sterling.research.fx.grok_forward import require_utc
@@ -56,6 +56,18 @@ class QuoteVerdict:
     published_at: datetime | None
     source: str
     reason: str
+
+
+# Yahoo's chart JSON stores closes as binary floats. Four decimal places in GBP
+# keeps a 0.01 pence LSE quote (GBp / 100) and drops the extra float digits.
+YAHOO_GBP_QUANTUM = Decimal("0.0001")
+
+
+def normalise_yahoo_gbp(price: Decimal) -> Decimal:
+    """Round a Yahoo daily close to 0.0001 GBP, half up."""
+    if price <= 0:
+        raise ResearchError("Yahoo GBP close must be positive")
+    return price.quantize(YAHOO_GBP_QUANTUM, rounding=ROUND_HALF_UP)
 
 
 def gbp_divisor(ticker: str) -> Decimal:

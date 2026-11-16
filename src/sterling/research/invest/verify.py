@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation
 
 from sterling.research.errors import ResearchError
 from sterling.research.grok.verify import verify_evidence_lane
+from sterling.research.invest.benchmarks import LEGACY_BENCHMARK_RULE, POINT_IN_TIME_CALCULATION
 from sterling.research.invest.identity import EXPERIMENT_V2, SYSTEM_INVEST
 from sterling.research.invest.registration import STARTING_CASH_GBP
 
@@ -272,6 +273,9 @@ def _benchmark_notes(records: Sequence[Mapping[str, object]]) -> list[str]:
             notes.append(f"Benchmark row {older} is older than the latest valuation {newer}. It is not a new mark.")
     if not performance:
         return notes
+    calculation = str(performance[-1].get("benchmark_calculation") or "")
+    if calculation != POINT_IN_TIME_CALCULATION:
+        notes.append(LEGACY_BENCHMARK_RULE)
     start = programme_start(records)
     raw = performance[-1].get("arms")
     arms = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []

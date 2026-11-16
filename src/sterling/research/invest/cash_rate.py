@@ -1,9 +1,12 @@
 """Retail sterling cash rate from published SONIA, without look-ahead.
 
 The Bank of England series IUDSOIA is the Sterling Overnight Index Average,
-published as an annual percent. The Bank publishes that print at 09:00
-Europe/London on the next XLON business day. A valuation may use a print only
-after that time. Easy-access retail deposits do not pay the wholesale rate.
+published as an annual percent. Authorised distributors publish that print at 09:00 Europe/London on the
+next XLON business day. This code reads the Interactive Statistical
+Database. The Bank makes that file available by 10:00 Europe/London on the
+working day after the first publication, one business day later. A
+valuation may use a print only after that database time. Easy-access
+retail deposits do not pay the wholesale rate.
 The research haircut is half a percentage point, floored at zero. It is a
 disclosed assumption, not a bank quote and not an operational cap.
 """
@@ -14,6 +17,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from decimal import Decimal
+from functools import lru_cache
 
 from sterling.research.calendar import LONDON, xlon
 from sterling.research.money import ZERO
@@ -58,11 +62,29 @@ def retail_annual_decimal(sonia_percent: Decimal) -> Decimal:
     return net_percent / Decimal(100)
 
 
-def sonia_available_at(reference: date) -> datetime:
-    """09:00 London on the next XLON day. That is when the Bank publishes the print."""
-    calendar = xlon()
-    published = calendar.next_trading_day(reference)
+def _next_xlon_day(reference: date) -> date:
+    return xlon().next_trading_day(reference)
+
+
+@lru_cache(maxsize=4096)
+def sonia_distributor_published_at(reference: date) -> datetime:
+    """09:00 London on the next XLON day, when authorised distributors publish."""
+    published = _next_xlon_day(reference)
     return datetime(published.year, published.month, published.day, 9, 0, tzinfo=LONDON)
+
+
+@lru_cache(maxsize=4096)
+def sonia_available_at(reference: date) -> datetime:
+    """10:00 London on the XLON day after the distributor publication day.
+
+    For a rate dated D, distributors publish at 09:00 on business day D+1.
+    The IADB file this code reads is available by 10:00 on the working day
+    after that publication, business day D+2. The calendar is XLON, England
+    and Wales bank holidays, used here as the London business-day grid.
+    """
+    published = _next_xlon_day(reference)
+    database_day = _next_xlon_day(published)
+    return datetime(database_day.year, database_day.month, database_day.day, 10, 0, tzinfo=LONDON)
 
 
 def cash_quote(
@@ -74,11 +96,13 @@ def cash_quote(
     """Latest IUDSOIA that refers to ``day`` or earlier and was already published."""
     if as_of is None:
         as_of = datetime.combine(day, time(16, 30), tzinfo=LONDON)
-    known = [
-        (reference, rate, sonia_available_at(reference))
-        for reference, rate in observations
-        if reference <= day and sonia_available_at(reference) <= as_of
-    ]
+    known: list[tuple[date, Decimal, datetime]] = []
+    for reference, rate in observations:
+        if reference > day:
+            continue
+        available = sonia_available_at(reference)
+        if available <= as_of:
+            known.append((reference, rate, available))
     if not known:
         return None
     reference, percent, available = max(known)

@@ -3,12 +3,17 @@
 The gate does not call a model. A short is a veto and the previous book is
 kept. Oversized long weights are clipped. Cash is the residual, so a clipped
 book can sit partly or entirely in cash.
+
+``fail_closed_allocation`` is the paper-v2 pilot check. It does not clip.
+A proposal outside the research limits is rejected and the caller keeps the
+current book.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date, datetime
 from decimal import Decimal
 
 from sterling.research.errors import ResearchError
@@ -183,6 +188,131 @@ def _risk_off_rebalance(
         if proposed.get(ticker, ZERO) > current.get(ticker, ZERO) + tolerance:
             return False
     return True
+
+
+@dataclass(frozen=True, slots=True)
+class FailClosedDecision:
+    """Accepted only when the proposal already fits. Weights are never resized."""
+
+    accepted: bool
+    reasons: tuple[str, ...]
+
+
+def fail_closed_allocation(
+    proposal: Mapping[str, Decimal],
+    current: Mapping[str, Decimal],
+    limits: ResearchLimits,
+    asset_class_by_ticker: Mapping[str, str],
+    nav_gbp: Decimal | None,
+    *,
+    tradable: set[str],
+    stale: set[str],
+    priced: set[str],
+    eligible: set[str],
+    decision_at: datetime,
+    fill_session: date | None,
+) -> FailClosedDecision:
+    """Reject a paper-v2 allocation that breaches the research limits.
+
+    This is not an operational trading policy. ``owner_approved`` must stay
+    false. The returned weights are not a clipped substitute for the proposal.
+    """
+    if limits.owner_approved:
+        return FailClosedDecision(False, ("rejected: research policy is not an operational trading policy",))
+    if nav_gbp is None or nav_gbp <= 0:
+        return FailClosedDecision(False, ("rejected: missing_valuation",))
+    reasons: list[str] = []
+    if any(weight < 0 for weight in proposal.values()) or any(weight < 0 for weight in current.values()):
+        reasons.append("rejected: long_only")
+    names = [ticker for ticker in proposal if ticker != "CASH"]
+    unknown = [ticker for ticker in names if ticker not in eligible or ticker not in asset_class_by_ticker]
+    if unknown:
+        reasons.append("rejected: instrument_eligibility " + ", ".join(sorted(set(unknown))))
+    if reasons:
+        return FailClosedDecision(False, tuple(reasons))
+
+    from sterling.research.invest.registration import NO_TRADE_BAND
+    from sterling.research.invest.sessions import first_session_after, session_open
+
+    tolerance = Decimal("0.00000001")
+    instruments = {ticker: proposal.get(ticker, ZERO) for ticker in eligible}
+    current_book = {ticker: current.get(ticker, ZERO) for ticker in eligible}
+    for ticker, weight in instruments.items():
+        if weight == 0:
+            continue
+        asset_class = asset_class_by_ticker[ticker]
+        exempt = asset_class in limits.single_instrument_cap_exempt_asset_classes
+        ceiling = limits.asset_cap(asset_class) if exempt else limits.max_single_instrument_weight
+        if weight > ceiling + tolerance:
+            reasons.append(f"rejected: concentration {ticker} {format(weight, 'f')} above {format(ceiling, 'f')}")
+    by_class: dict[str, Decimal] = {}
+    for ticker, weight in instruments.items():
+        if weight == 0:
+            continue
+        asset_class = asset_class_by_ticker[ticker]
+        by_class[asset_class] = by_class.get(asset_class, ZERO) + weight
+    for asset_class, total in sorted(by_class.items()):
+        cap = limits.asset_cap(asset_class)
+        if total > cap + tolerance:
+            reasons.append(f"rejected: concentration {asset_class} {format(total, 'f')} above {format(cap, 'f')}")
+    gross = sum(instruments.values(), ZERO)
+    cash = proposal.get("CASH", Decimal(1) - gross)
+    if gross > limits.max_gross + tolerance:
+        reasons.append(f"rejected: gross {format(gross, 'f')} above {format(limits.max_gross, 'f')}")
+    if cash < limits.cash_min - tolerance or cash > limits.cash_max + tolerance:
+        reasons.append(
+            f"rejected: cash {format(cash, 'f')} outside {format(limits.cash_min, 'f')} to {format(limits.cash_max, 'f')}"
+        )
+    if abs(gross + cash - 1) > Decimal("0.005") + tolerance:
+        reasons.append("rejected: cash weight does not match the residual")
+    for ticker in sorted(eligible):
+        held = current_book.get(ticker, ZERO)
+        if held <= tolerance:
+            continue
+        if ticker not in priced:
+            reasons.append(f"rejected: missing_valuation {ticker}")
+        elif ticker in stale or ticker not in tradable:
+            reasons.append(f"rejected: stale_holding {ticker}")
+    for ticker in sorted(eligible):
+        gap = abs(instruments.get(ticker, ZERO) - current_book.get(ticker, ZERO))
+        if gap <= NO_TRADE_BAND:
+            continue
+        if ticker in stale or ticker not in tradable:
+            reasons.append(f"rejected: stale_or_untradable {ticker}")
+        elif ticker not in priced:
+            reasons.append(f"rejected: missing_valuation {ticker}")
+        elif gap * nav_gbp < limits.min_trade_notional_gbp:
+            reasons.append(f"rejected: below_min_trade {ticker}")
+    turnover = _one_way(instruments, current_book)
+    risk_off = _risk_off_rebalance(instruments, current_book, asset_class_by_ticker)
+    if turnover > limits.max_one_way_turnover + tolerance and not (limits.risk_off_turnover_exception and risk_off):
+        reasons.append(f"rejected: turnover {format(turnover, 'f')} above {format(limits.max_one_way_turnover, 'f')}")
+    try:
+        expected = first_session_after(decision_at)
+    except ResearchError:
+        reasons.append("rejected: next_open_timing")
+        expected = None
+    if expected is not None:
+        opened = session_open(expected)
+        if opened is None or opened <= decision_at:
+            reasons.append("rejected: next_open_timing")
+        elif fill_session is not None and fill_session != expected:
+            reasons.append("rejected: next_open_timing")
+    if reasons:
+        return FailClosedDecision(False, tuple(dict.fromkeys(reasons)))
+    return FailClosedDecision(True, ("accepted",))
+
+
+def paper_asset_classes() -> dict[str, str]:
+    """Asset classes for the six paper-v2 funds. Optional comparison names are excluded."""
+    from sterling.research.instruments import load_candidate_universe
+    from sterling.research.invest.schema import FUNDS
+
+    found = {item.ticker: item.asset_class for item in load_candidate_universe().instruments}
+    missing = [ticker for ticker in FUNDS if ticker not in found]
+    if missing:
+        raise ResearchError("candidate universe is missing " + ", ".join(missing))
+    return {ticker: found[ticker] for ticker in FUNDS}
 
 
 def _veto(current: Mapping[str, Decimal], reasons: tuple[str, ...]) -> GateResult:
